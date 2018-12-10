@@ -1,3 +1,5 @@
 gym[atari]
 opencv-python
 tqdm
+torch
+torchvision

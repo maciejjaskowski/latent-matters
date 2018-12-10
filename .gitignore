@@ -1,1 +1,3 @@
 observations/
+__pycache__
+.idea

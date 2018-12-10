@@ -12,7 +12,7 @@ print(run_id)
 expected_observations = 1000000
 
 all_obs_count = 0
-for i_game in tqdm.tqdm(range(expected_observations)):
+for i_game in range(expected_observations):
   if all_obs_count >= expected_observations:
     sys.exit(0)
   print("All observations count {} out of {}".format(all_obs_count, expected_observations))
@@ -26,7 +26,7 @@ for i_game in tqdm.tqdm(range(expected_observations)):
     observation, reward, done, info = env.step(action)
     prev_obs_name = obs_name
     obs_name = "observations/obs_{}_{}_{}.png".format(run_id, i_game, step)
-    cv2.imwrite(obs_name, observation)
+    cv2.imwrite(obs_name, cv2.cvtColor(observation, cv2.COLOR_RGB2BGR))
     obs_names.append({"png": obs_name,
                       "reward": reward,
                       "action": action,
