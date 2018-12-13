@@ -12,8 +12,9 @@ from torch.utils.data import Sampler
 
 class Dataset(data.Dataset):
 
-    def __init__(self, root, n_games, max_diff, shuffle=True):
+    def __init__(self, root, n_games, min_diff, max_diff, shuffle=True):
         self.max_diff = max_diff  # Maximum distance to be predicted
+        self.min_diff = min_diff
 
         games = [os.path.join(root, d) for d in os.listdir(root) if d.endswith(".json")]
         self.obs_count = 0
@@ -77,8 +78,8 @@ class Dataset(data.Dataset):
 
     def __getitem__(self, _):
         game = torch.randint(high=self.games_count, size=(1,), dtype=torch.int64).tolist()[0]
-        index1 = torch.randint(high=len(self.game_data[game]), size=(1,)).tolist()[0]
-        index2 = torch.randint(low=index1, high=min(index1+self.max_diff, len(self.game_data[game])), size=(1,)).tolist()[0]
+        index1 = torch.randint(high=len(self.game_data[game])-self.min_diff, size=(1,)).tolist()[0]
+        index2 = torch.randint(low=max(index1+self.min_diff, index1), high=min(index1+self.max_diff, len(self.game_data[game])), size=(1,)).tolist()[0]
         sample = self.get_sample(game_index=game, index1=index1, index2=index2)
         # print("GII", game, index1, index2)
 

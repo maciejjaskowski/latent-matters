@@ -34,7 +34,7 @@ class Net(nn.Module):
         self.fc2 = nn.Linear(32, 32)
         self.fc3 = nn.Linear(32, 1)
 
-        self.ran = torch.Tensor([range(18)] * 18)
+        self.ran = torch.Tensor([range(80)] * 80)
 
     def _softargmax(self, x4):
         softmaxed = F.softmax(x4.reshape([-1, x4.shape[1], x4.shape[2]*x4.shape[3]]), dim=-1).reshape(x4.shape)  #, _stacklevel=5)
@@ -47,7 +47,7 @@ class Net(nn.Module):
         assert (softmaxed.shape == y_v.shape), softmaxed.shape
         y_v = (softmaxed * y_v).sum(dim=[2, 3])
         x_v = (softmaxed * x_v).sum(dim=[2, 3])
-        return x_v, y_v, softmaxed
+        return y_v, x_v, softmaxed
 
     def _encode(self, x):
         # print("SSS", x[0,0,40,:].mean())
@@ -55,7 +55,8 @@ class Net(nn.Module):
         x2 = F.relu(self.conv1(x-0.33))
         x3 = F.relu(self.bn(self.conv2(x2)))
         dense = self.conv3(x3)  # No activation as we _softargmax the result
-        x_v, y_v, softmaxed = self._softargmax(dense)
+        dense_upscaled = F.interpolate(dense, size=(80, 80), mode='bilinear', align_corners=False)
+        x_v, y_v, softmaxed = self._softargmax(dense_upscaled)
 
         assert list(x_v.shape)[1:] == [self.n_hidden_channels], (list(x_v.shape)[1:], [self.n_hidden_channels])
         xy = torch.stack([x_v, y_v], dim=2)
@@ -83,7 +84,6 @@ class Net(nn.Module):
 
         keypoints_consistency_loss = []
         silhuette_consistency_loss = []
-        map1 = F.interpolate(map1, size=(80, 80), mode='bilinear', align_corners=False)
         eps = 1e-7
         for b in range(keypoints1.shape[0]):
             for k in range(keypoints1.shape[1]):
@@ -92,10 +92,18 @@ class Net(nn.Module):
                 if torch.mean(img_change[b]) > 0:
                     silhuette_consistency_loss.append(-torch.log(eps + torch.sum(map1[b,k,:,:] * img_change[b,:,:])))
 
+        keypoint_variety_loss = torch.Tensor(0.0)
+        for b in range(keypoints1.shape[0]):
+            for i in range(keypoints1.shape[1]):
+                for j in range(keypoints1.shape[2]):
+                    if i != j:
+                        keypoint_variety_loss += torch.max(torch.sum((keypoints1[b,i,:] - keypoints1[b,j,:])**2), 0)
+        keypoint_variety_loss /= keypoints1.shape[1]**2 * keypoints1.shape[0]
+
         # print(torch.mean(img_change, dim=[1,2]), img_change.shape)
         keypoints_consistency_loss = torch.mean(torch.stack(keypoints_consistency_loss))
         silhuette_consistency_loss = torch.mean(torch.stack(silhuette_consistency_loss))
-        return keypoints_consistency_loss, silhuette_consistency_loss
+        return keypoints_consistency_loss, silhuette_consistency_loss, keypoint_variety_loss
 
     def forward(self, X):
         keypoints1, map1 = self._encode(X['first'])
@@ -106,7 +114,7 @@ class Net(nn.Module):
 
         print("keypoints", keypoints1[0])
 
-        keypoints_consistency_loss, silhuette_consistency_loss = self.losses(keypoints1=keypoints1, keypoints1_prev=keypoints1_prev, map1=map1, img_change=img_change)
+        keypoints_consistency_loss, silhuette_consistency_loss, keypoint_variety_loss = self.losses(keypoints1=keypoints1, keypoints1_prev=keypoints1_prev, map1=map1, img_change=img_change)
 
         return {"keypoints1": keypoints1,
                 "keypoints2": keypoints2,
@@ -114,6 +122,7 @@ class Net(nn.Module):
                 "map1": map1,
                 "map2": map2,
                 "img_change": img_change,
+                "keypoint_variety_loss": keypoint_variety_loss,
                 "keypoints_consistency_loss": keypoints_consistency_loss,
                 "silhuette_consistency_loss": silhuette_consistency_loss}
 
@@ -134,7 +143,7 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
                     ((output['keypoints1'][b,k] - output['keypoints1_prev'][b,k]) * target[b] - (output['keypoints2'][b,k] - output['keypoints1_prev'][b,k]))**2)
         loss_move = torch.mean(torch.stack(loss_move))
 
-        loss = loss_move + 0.03*output['keypoints_consistency_loss'] + output['silhuette_consistency_loss']
+        loss = 0.3 * loss_move + 0.03*output['keypoints_consistency_loss'] + output['silhuette_consistency_loss'] + output['keypoint_variety_loss']
         # loss = output['silhuette_consistency_loss']
         loss.backward()
         optimizer.step()
@@ -170,12 +179,19 @@ def play(train_dataset):
         png = Image.open("../atari-objects-" + obs['png']).resize((320, 320))
         # png_prev = Image.open("../atari-objects-" + obs['prev_png']).resize((320, 320))
         xy, softmaxed = model._encode(train_dataset.transform(png).unsqueeze(0))
-        x_r = xy[:,:,0] * 80 / 18.0
-        y_r = xy[:,:,1] * 80 / 18.0
+        xy = xy.detach().numpy()
+        softmaxed = softmaxed.detach().numpy()
+        y_r = xy[:, :, 0]
+        x_r = xy[:, :, 1]
         r = np.zeros((80, 80, 3), np.uint8)
-        r[np.round(x_r.detach().numpy()).astype(np.int32), np.round(y_r.detach().numpy()).astype(np.int32), :] = 255
+        print(softmaxed[0, :, :, :])
+        attention = (cv2.resize(softmaxed[0, :, :, :].transpose([1,2,0]), (80, 80)) / softmaxed[0, :, :, :].max() * 255).astype(np.uint8)
+        r[np.round(x_r).astype(np.int32), np.round(y_r).astype(np.int32), :] = [255, 0, 0]
+        print(np.array(png).dtype, attention.dtype)
         repr = Image.fromarray(r).resize((320, 320))
-        res = np.maximum(np.array(png), np.array(repr))
+        attention = Image.fromarray(attention).resize((320,320))
+        print(np.array(repr))
+        res = np.maximum(np.array(png), np.array(repr), np.array(attention))
         Image.fromarray(res).save('game0_{:03d}.png'.format(i_obs))
 
 if __name__ == '__main__':
@@ -209,7 +225,8 @@ if __name__ == '__main__':
     train_dataset = Dataset(
         root=data_path,
         n_games=100,
-        max_diff=2
+        min_diff=1,
+        max_diff=3
     )
     train_loader = DataLoader(train_dataset, batch_size=64,num_workers=5,shuffle=False,
     )
