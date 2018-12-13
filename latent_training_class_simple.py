@@ -20,21 +20,23 @@ class Net(nn.Module):
     def __init__(self, n_input_channels, classification, n_classes=1):
         super(Net, self).__init__()
         self.n_hidden_channels = 3
-        self.conv1 = nn.Conv2d(n_input_channels, 20, kernel_size=5, dilation=1)
-        self.conv2 = nn.Conv2d(20, 30, kernel_size=5, dilation=1, stride=2)
+        self.conv1 = nn.Conv2d(n_input_channels, 20, kernel_size=3, dilation=1)
+        self.conv2 = nn.Conv2d(20, 30, kernel_size=3, dilation=1, stride=2)
 
         self.bn = nn.BatchNorm2d(30)
         self.conv3 = nn.Conv2d(30, self.n_hidden_channels, kernel_size=3, dilation=1, stride=2)  # Modelujemy 3 obiekty
 
 
         # self.conv2_drop = nn.Dropout2d()
-        self.fc1 = nn.Linear(6 * self.n_hidden_channels, 50)
+        self.fc1 = nn.Linear(2 * self.n_hidden_channels, 50)
         if classification:
-            self.fc2 = nn.Linear(2 * 50, n_classes)
+            self.fc2 = nn.Linear(50, 50)
+            self.fc3 = nn.Linear(50, 50)
+            self.fc4 = nn.Linear(2*50, n_classes)
         else:
             self.fc2 = nn.Linear(2 * 50, n_classes)
 
-        self.ran = torch.Tensor([range(17)] * 17) #.to(torch.current_device())
+        self.ran = torch.Tensor([range(18)] * 18) #.to(torch.current_device())
     # def to(self, device):
     #     super(Net).to(device)
 
@@ -76,23 +78,45 @@ class Net(nn.Module):
         first_positions = self._one_pass(X['first'])
         first_prev_positions = self._one_pass(X['first_prev'])
 
-        second_positions = self._one_pass(X['second'])
+        # second_positions = self._one_pass(X['second'])
         second_prev_positions = self._one_pass(X['second_prev'])
 
 
-        first = torch.cat(first_positions + first_prev_positions + (torch.cat(first_positions, 1) - torch.cat(first_prev_positions, 1),), 1)
-        assert first.shape[1] == 6 * self.n_hidden_channels, first.shape[1:]
-        second = torch.cat(second_positions + second_prev_positions + (torch.cat(second_positions, 1) - torch.cat(second_prev_positions, 1),), 1)
-        assert second.shape[1] == 6 * self.n_hidden_channels
+        first = torch.cat(first_positions, 1)
+        assert first.shape[1] == 2 * self.n_hidden_channels, first.shape[1:]
+        first_prev = torch.cat(first_prev_positions, 1)
+
+        second = torch.cat(second_prev_positions, 1)
+        assert second.shape[1] == 2 * self.n_hidden_channels
 
         # print("SHAPE",first.shape, first_positions[0].shape, first_positions[1].shape)
         # print("SHAPE", second.shape)
-        combined = F.relu(torch.cat([self.fc1(first), self.fc1(second)], 1))
-        assert list(combined.shape)[1:] == [2*50]
 
-        res = self.fc2(combined)
-        return res
+        x = F.relu(self.fc1(second-first_prev))
+        res = F.relu(self.fc2(x))
+        res1 = self.fc3(res)
 
+        x = F.relu(self.fc1(first - first_prev))
+        res = F.relu(self.fc2(x))
+        res2 = F.relu(self.fc3(res))
+        return self.fc4(torch.cat([res1, res2], dim=1))
+
+def play(train_dataset):
+    from PIL import Image
+    game = train_dataset.game_data[0]
+    for i_obs, obs in enumerate(game):
+        # sample = iter(test_loader).next()
+        png = Image.open("../atari-objects-" + obs['png']).resize((320, 320))
+        # png_prev = Image.open("../atari-objects-" + obs['prev_png']).resize((320, 320))
+        x, y = model._one_pass(train_dataset.transform(png).unsqueeze(0))
+        x_r = x[0,:] * 80 / 18.0
+        y_r = y[0,:] * 80 / 18.0
+        print(x_r, y_r)
+        r = np.zeros((80, 80, 3), np.uint8)
+        r[np.round(x_r.detach().numpy()).astype(np.int32), np.round(y_r.detach().numpy()).astype(np.int32), :] = 255
+        repr = Image.fromarray(r).resize((320, 320))
+        res = np.maximum(np.array(png), np.array(repr))
+        Image.fromarray(res).save('game0_{:03d}.png'.format(i_obs))
 
 def train(args, classification, model, device, train_loader, optimizer, epoch):
     model.train()
@@ -102,8 +126,10 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
         optimizer.zero_grad()
         output = model(data)
         if classification:
+            print("output - target", output[0], target[0])
             loss = F.nll_loss(F.log_softmax(output), target.long())
         else:
+
             loss = F.smooth_l1_loss(output.squeeze(), target)
         loss.backward()
         optimizer.step()

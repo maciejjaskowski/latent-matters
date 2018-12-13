@@ -12,11 +12,12 @@ from torch.utils.data import Sampler
 
 class Dataset(data.Dataset):
 
-    def __init__(self, root, n_games):
-        self.max_diff = 16  # Maximum distance to be predicted
+    def __init__(self, root, n_games, max_diff, shuffle=True):
+        self.max_diff = max_diff  # Maximum distance to be predicted
 
         games = [os.path.join(root, d) for d in os.listdir(root) if d.endswith(".json")]
         self.obs_count = 0
+        self.shuffle = shuffle
 
         self.n_games = n_games
 
@@ -32,12 +33,13 @@ class Dataset(data.Dataset):
                 countdown = 22
                 filtered_game_obs = []
                 for o in game_obs:
-                    if o['reward'] != 0:
+                    if o['reward'] != 0: # or len(filtered_game_obs) > 3:
 
                         countdown = 22
                         self.game_data.append(filtered_game_obs)
                         self.obs_count += len(filtered_game_obs)
                         filtered_game_obs = []
+                        #break
                     if countdown > 0:
                         countdown -= 1
                     else:
@@ -55,9 +57,8 @@ class Dataset(data.Dataset):
         tensor = torchvision.transforms.ToTensor()(img)
         return tensor
 
-
     def __len__(self):
-        return self.obs_count
+        return 100
 
     def get_sample(self, game_index, index1, index2):
         assert index1 <= index2
@@ -66,21 +67,26 @@ class Dataset(data.Dataset):
         first_prev = prefix + self.game_data[game_index][index1]['prev_png']
 
         second = "../atari-objects-" + self.game_data[game_index][index2]['png']
-        second_prev = prefix + self.game_data[game_index][index1]['prev_png']
+        second_prev = prefix + self.game_data[game_index][index2]['prev_png']
 
         return {"first": self.transform(Image.open(first)),
                 "first_prev": self.transform(Image.open(first_prev)),
                 "second": self.transform(Image.open(second)),
                 "second_prev": self.transform(Image.open(second_prev)),
-                "diff": index2 - index1}
+                }, np.float32(index2 - index1)
 
     def __getitem__(self, _):
         game = torch.randint(high=self.games_count, size=(1,), dtype=torch.int64).tolist()[0]
         index1 = torch.randint(high=len(self.game_data[game]), size=(1,)).tolist()[0]
         index2 = torch.randint(low=index1, high=min(index1+self.max_diff, len(self.game_data[game])), size=(1,)).tolist()[0]
         sample = self.get_sample(game_index=game, index1=index1, index2=index2)
+        # print("GII", game, index1, index2)
 
         return sample
+
+    def iter_game(self, i_game):
+        for obs in self.game_data[i_game]:
+            yield obs
 
     def __repr__(self):
         fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
@@ -88,28 +94,4 @@ class Dataset(data.Dataset):
         fmt_str += '    Number of games: {}\n'.format(self.games_count)
         fmt_str += '    Root Location: {}\n'.format(self.root)
         return fmt_str
-
-
-class MySampler(Sampler):
-    r"""Samples elements randomly. If without replacement, then sample from a shuffled dataset.
-    If with replacement, then user can specify ``num_samples`` to draw.
-
-    Arguments:
-        data_source (Dataset): dataset to sample from
-        num_samples (int): number of samples to draw
-    """
-
-    def __init__(self, data_source, num_samples):
-        self.data_source = data_source
-        self.num_samples = num_samples
-
-        if not isinstance(self.num_samples, int) or self.num_samples <= 0:
-            raise ValueError("num_samples should be a positive integeral "
-                             "value, but got num_samples={}".format(self.num_samples))
-
-    def __iter__(self):
-        games = torch.randint(high=self.data_source.games_count, size=(self.num_samples,), dtype=torch.int64).tolist()
-        indices = [(game, sorted(torch.randint(high=len(self.data_source.game_data[game]), size=(2,)))) for game in games]
-
-        return iter([self.data_source.get_sample(game_index=ind[0], index1=ind[1][0], index2=ind[1][1]) for ind in indices])
 

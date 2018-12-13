@@ -1,3 +1,6 @@
 observations/
 __pycache__
 .idea
+.cache
+game0*.png
+out.mp4

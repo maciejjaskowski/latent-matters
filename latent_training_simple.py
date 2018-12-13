@@ -17,7 +17,7 @@ from dataset import Dataset
 
 
 class Net(nn.Module):
-    def __init__(self, n_input_channels, classification, n_classes=1):
+    def __init__(self, n_input_channels, classification):
         super(Net, self).__init__()
         self.n_hidden_channels = 3
         self.conv1 = nn.Conv2d(n_input_channels, 20, kernel_size=5, dilation=1)
@@ -28,11 +28,8 @@ class Net(nn.Module):
 
 
         # self.conv2_drop = nn.Dropout2d()
-        self.fc1 = nn.Linear(6 * self.n_hidden_channels, 50)
-        if classification:
-            self.fc2 = nn.Linear(2 * 50, n_classes)
-        else:
-            self.fc2 = nn.Linear(2 * 50, n_classes)
+        self.fc1 = nn.Linear(2 * self.n_hidden_channels, 10)
+        self.fc2 = nn.Linear(10, 1)
 
         self.ran = torch.Tensor([range(17)] * 17) #.to(torch.current_device())
     # def to(self, device):
@@ -80,18 +77,16 @@ class Net(nn.Module):
         second_prev_positions = self._one_pass(X['second_prev'])
 
 
-        first = torch.cat(first_positions + first_prev_positions + (torch.cat(first_positions, 1) - torch.cat(first_prev_positions, 1),), 1)
-        assert first.shape[1] == 6 * self.n_hidden_channels, first.shape[1:]
-        second = torch.cat(second_positions + second_prev_positions + (torch.cat(second_positions, 1) - torch.cat(second_prev_positions, 1),), 1)
-        assert second.shape[1] == 6 * self.n_hidden_channels
+        first = torch.cat(first_positions, 1)
+        assert first.shape[1] == 2 * self.n_hidden_channels, first.shape[1:]
+        second = torch.cat(second_positions, 1)
+        assert second.shape[1] == 2 * self.n_hidden_channels
 
-        # print("SHAPE",first.shape, first_positions[0].shape, first_positions[1].shape)
-        # print("SHAPE", second.shape)
-        combined = F.relu(torch.cat([self.fc1(first), self.fc1(second)], 1))
-        assert list(combined.shape)[1:] == [2*50]
+        res = torch.abs(first - second)
+        res1 = F.relu(self.fc1(res))
+        res2 = self.fc2(res1)
 
-        res = self.fc2(combined)
-        return res
+        return res2
 
 
 def train(args, classification, model, device, train_loader, optimizer, epoch):
@@ -160,17 +155,17 @@ if __name__ == '__main__':
 
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
     data_path = '../atari-objects-observations/'
-
-    max_diff=4
     train_dataset = Dataset(
         root=data_path,
-        n_games=10000000,
-        max_diff=max_diff
+        n_games=1
     )
-    train_loader = DataLoader(train_dataset,batch_size=64,num_workers=5,shuffle=False,
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=64,
+        num_workers=5,
+        shuffle=False,
         # sampler=MySampler(train_dataset, num_samples=2)
     )
-    test_loader = DataLoader(train_dataset, batch_size=1, num_workers=1, shuffle=False)
 
 
     def img_diff(second, first):
@@ -187,8 +182,8 @@ if __name__ == '__main__':
     #     # ToPILImage()(D['first'][i]).resize((240, 240)).show()
     #     sys.exit(0)
 
-    classification = True
-    model = Net(n_input_channels=3, classification=classification, n_classes=max_diff).to(device)
+    classification = False
+    model = Net(n_input_channels=3, classification=classification, max_diff=4).to(device)
     # optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
