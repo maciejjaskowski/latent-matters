@@ -9,7 +9,7 @@ from latent_training import Net
 class TestNet():
 
     def test_softargmax(self):
-        net = Net(n_input_channels=2)
+        net = Net(n_input_channels=2, classification=False)
         input = np.zeros((2, 9, 9), dtype=np.float32) - 10000.0
         input[0, 2, 3] = 10000.0
         input[1, 0, 1] = 10000.0
@@ -30,7 +30,7 @@ class TestNet():
         print(res[0].shape, res[1].shape)
 
     def test_forward(self):
-        net = Net(n_input_channels=2)
+        net = Net(n_input_channels=2, classification=False)
 
         input = np.zeros((3, 2, 9, 9), dtype=np.float32)
         tensor = t.Tensor(input)
