@@ -59,7 +59,7 @@ class Dataset(data.Dataset):
         return tensor
 
     def __len__(self):
-        return 100
+        return 128
 
     def get_sample(self, game_index, index1, index2):
         assert index1 <= index2

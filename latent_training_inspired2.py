@@ -65,6 +65,7 @@ class Net(nn.Module):
 
         keypoints_consistency_loss = []
         silhuette_consistency_loss = []
+        silhuette_sum_loss = []
         eps = 1e-7
         for b in range(keypoints1.shape[0]):
             for k in range(keypoints1.shape[1]):
@@ -72,6 +73,9 @@ class Net(nn.Module):
                 # print("SHAPE", map1.shape, img_change.shape)
                 if torch.mean(img_change[b]) > 0:
                     silhuette_consistency_loss.append(-torch.log(eps + torch.sum(map1[b,k,:,:] * img_change[b,:,:])))
+
+                    silhuette_sum_loss.append(-torch.log(eps + torch.sum((torch.sum(map1[b,:,:,:], dim=0) * img_change[b,:,:]))))
+
 
         delta = 3.0
         keypoint_variety_loss = torch.Tensor([0.0])
@@ -85,9 +89,10 @@ class Net(nn.Module):
         keypoint_variety_loss /= keypoints1.shape[1]**2 * keypoints1.shape[0]
 
         # print(torch.mean(img_change, dim=[1,2]), img_change.shape)
+        silhuette_sum_loss = torch.mean(torch.stack(silhuette_sum_loss))
         keypoints_consistency_loss = torch.mean(torch.stack(keypoints_consistency_loss))
         silhuette_consistency_loss = torch.mean(torch.stack(silhuette_consistency_loss))
-        return keypoints_consistency_loss, silhuette_consistency_loss, keypoint_variety_loss[0]
+        return keypoints_consistency_loss, silhuette_consistency_loss, keypoint_variety_loss[0], silhuette_sum_loss
 
     def forward(self, X):
         keypoints1, map1, _, _ = self._encode(X['first'])
@@ -95,11 +100,12 @@ class Net(nn.Module):
         keypoints2, map2, _, _ = self._encode(X['second'])
 
         # img_change = torch.sum(((torch.abs(X['first'] - X['second']) > 0)).float(), dim=1)
-        img_change = torch.sum(((torch.abs(X['first_prev'] - X['second']) > 0)).float(), dim=1)
+        img_change = (torch.sum(torch.abs(X['first_prev'] - X['second']), dim=1) > 0).float()
 
+        print("img_change", img_change.shape)
         print("keypoints", keypoints1[0])
 
-        keypoints_consistency_loss, silhuette_consistency_loss, keypoint_variety_loss = self.losses(keypoints1=keypoints1, keypoints1_prev=keypoints1_prev, map1=map1, img_change=img_change)
+        keypoints_consistency_loss, silhuette_consistency_loss, keypoint_variety_loss, silhuette_sum_loss = self.losses(keypoints1=keypoints1, keypoints1_prev=keypoints1_prev, map1=map1, img_change=img_change)
 
         return {"keypoints1": keypoints1,
                 "keypoints2": keypoints2,
@@ -109,7 +115,8 @@ class Net(nn.Module):
                 "img_change": img_change,
                 "keypoint_variety_loss": keypoint_variety_loss,
                 "keypoints_consistency_loss": keypoints_consistency_loss,
-                "silhuette_consistency_loss": silhuette_consistency_loss}
+                "silhuette_consistency_loss": silhuette_consistency_loss,
+                "silhuette_sum_loss": silhuette_sum_loss}
 
 
 
@@ -126,21 +133,23 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
             for k in range(output['keypoints1'].shape[1]):
                 loss_move.append(
                     ((output['keypoints1'][b,k] - output['keypoints1_prev'][b,k]) * target[b] - (output['keypoints2'][b,k] - output['keypoints1_prev'][b,k]))**2)
-        loss_move = 0.01 * torch.mean(torch.stack(loss_move))
-        keypoints_consistency_loss = 0.01*output['keypoints_consistency_loss']
+        loss_move = 0.1 * torch.mean(torch.stack(loss_move))
+        keypoints_consistency_loss = 0.003*output['keypoints_consistency_loss']
         # Chce zeby keypoint_variaty loss nie bylo duzy, ale gwaltownie rosl
-        keypoint_variety_loss = 0.01*output['keypoint_variety_loss']
+        keypoint_variety_loss = 0.03*output['keypoint_variety_loss']
+        silhuette_sum_loss = output['silhuette_sum_loss']
 
         loss = loss_move + output['silhuette_consistency_loss'] + output['keypoint_variety_loss'] + keypoints_consistency_loss
-        loss = output['silhuette_consistency_loss'] + keypoint_variety_loss #+ keypoints_consistency_loss
+        loss = output['silhuette_consistency_loss'] + silhuette_sum_loss + loss_move #keypoints_consistency_loss
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
             print(output['keypoints_consistency_loss'])
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f} move: {:.6f} key_var: {:.6f} key_cons: {:.6f} silh_cons: {:.6f}'.format(
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f} move: {:.6f} key_var: {:.6f} silh_sum: {:.6f} key_cons: {:.6f} silh_cons: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item(), loss_move,
                                                                    keypoint_variety_loss,
+                                                                   silhuette_sum_loss,
                                                                    keypoints_consistency_loss,
                                                                    output['silhuette_consistency_loss']))
 
@@ -180,7 +189,6 @@ def single_image(i_obs):
     r = np.zeros((80, 80, 3), np.uint8)
     print(softmaxed[0, :, :, :])
     attention = (cv2.resize(softmaxed[0, :, :, :].transpose([1, 2, 0]), (80, 80)) / softmaxed[0, :, :,
-
                                                                                 :].max() * 255).astype(np.uint8)
     r[np.round(x_r).astype(np.int32), np.round(y_r).astype(np.int32), :] = [255, 0, 0]
     print(np.array(png).dtype, attention.dtype, r.dtype)
@@ -189,9 +197,8 @@ def single_image(i_obs):
     print(attention.shape)
     attention = Image.fromarray(attention).resize((320, 320))
     print(np.array(repr))
-
-    res = np.maximum(np.array(torchvision.transforms.ToPILImage()(png).resize((320, 320))), np.array(repr))#, np.array(attention))
-    # res = np.maximum(np.array(repr), np.array(attention))
+    # res = np.maximum(np.array(torchvision.transforms.ToPILImage()(png).resize((320, 320))), np.array(repr))#, np.array(attention))
+    res = np.maximum(np.array(repr), np.array(attention))
     print(attention)
     # res = np.array(attention)
     Image.fromarray(res).save('game0_{:03d}.png'.format(i_obs))
@@ -205,7 +212,9 @@ def play(train_dataset):
 # Max diff ustawic na 2 lub 3 ?
 # Bilinear w innym miejscu ?
 # Zrobić "zwykly" attention do oszacowania img_change, po to zeby suma "map" dodawala sie do img_change ?
-# Cos ten softargmax nie dziala tak jak powinien (porownaj z argmax)
+# [DONE] Cos ten softargmax nie dziala tak jak powinien (porownaj z argmax)
+# Silhuette sum loss moglby byc lepszy, gdyby uzyc KL divergence ?
+# [Fixed] Silhuette is not robust because img_change is calculated wrong ?
 
 
 if __name__ == '__main__':
@@ -238,7 +247,7 @@ if __name__ == '__main__':
     data_path = '../atari-objects-observations/'
     train_dataset = Dataset(
         root=data_path,
-        n_games=100,
+        n_games=10000,
         min_diff=1,
         max_diff=2
     )
