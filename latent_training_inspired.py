@@ -116,7 +116,7 @@ class Net(nn.Module):
         # img_change = torch.sum(((torch.abs(X['first'] - X['second']) > 0)).float(), dim=1)
         img_change = torch.sum(((torch.abs(X['first_prev'] - X['second']) > 0)).float(), dim=1)
 
-        print("keypoints", keypoints1[0])
+        # print("keypoints", keypoints1[0])
 
         keypoints_consistency_loss, silhuette_consistency_loss, keypoint_variety_loss = self.losses(keypoints1=keypoints1, keypoints1_prev=keypoints1_prev, map1=map1, img_change=img_change)
 

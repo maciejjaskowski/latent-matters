@@ -12,9 +12,10 @@ from torch.utils.data import Sampler
 
 class Dataset(data.Dataset):
 
-    def __init__(self, root, n_games, min_diff, max_diff, shuffle=True):
+    def __init__(self, root, n_games, min_diff, max_diff, epoch_size, shuffle=True):
         self.max_diff = max_diff  # Maximum distance to be predicted
         self.min_diff = min_diff
+        self.epoch_size = epoch_size
 
         games = [os.path.join(root, d) for d in os.listdir(root) if d.endswith(".json")]
         self.obs_count = 0
@@ -59,7 +60,7 @@ class Dataset(data.Dataset):
         return tensor
 
     def __len__(self):
-        return 128
+        return self.epoch_size
 
     def get_sample(self, game_index, index1, index2):
         assert index1 <= index2

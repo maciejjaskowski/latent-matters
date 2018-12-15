@@ -100,10 +100,10 @@ class Net(nn.Module):
         keypoints2, map2, _, _ = self._encode(X['second'])
 
         # img_change = torch.sum(((torch.abs(X['first'] - X['second']) > 0)).float(), dim=1)
-        img_change = (torch.sum(torch.abs(X['first_prev'] - X['second']), dim=1) > 0).float()
+        img_change = (torch.sum(torch.abs(X['first_prev'] - X['first']), dim=1) > 0).float()
 
-        print("img_change", img_change.shape)
-        print("keypoints", keypoints1[0])
+        # print("img_change", img_change.shape)
+        # print("keypoints", keypoints1[0])
 
         keypoints_consistency_loss, silhuette_consistency_loss, keypoint_variety_loss, silhuette_sum_loss = self.losses(keypoints1=keypoints1, keypoints1_prev=keypoints1_prev, map1=map1, img_change=img_change)
 
@@ -121,6 +121,7 @@ class Net(nn.Module):
 
 
 def train(args, classification, model, device, train_loader, optimizer, epoch):
+
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data = {key: d.to(device) for key, d in data.items()}
@@ -139,8 +140,8 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
         keypoint_variety_loss = 0.03*output['keypoint_variety_loss']
         silhuette_sum_loss = output['silhuette_sum_loss']
 
-        loss = loss_move + output['silhuette_consistency_loss'] + output['keypoint_variety_loss'] + keypoints_consistency_loss
-        loss = output['silhuette_consistency_loss'] + silhuette_sum_loss + loss_move #keypoints_consistency_loss
+        # loss = loss_move + output['silhuette_consistency_loss'] + output['keypoint_variety_loss'] + keypoints_consistency_loss
+        loss = output['silhuette_consistency_loss'] + loss_move + silhuette_sum_loss #keypoint_variety_loss #keypoints_consistency_loss
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
@@ -154,24 +155,23 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
                                                                    output['silhuette_consistency_loss']))
 
 
-def test(args, model, device, test_loader):
+def test(epoch, model, device, train_dataset):
+    print("Test epoch {}".format(epoch))
     model.eval()
     test_loss = 0
     correct = 0
     with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            test_loss += F.nll_loss(output, target, reduction='sum').item() # sum up batch loss
-            pred = output.max(1, keepdim=True)[1] # get the index of the max log-probability
-            correct += pred.eq(target.view_as(pred)).sum().item()
+        game = train_dataset.game_data[0]
+        for i_obs in range(len(game)-1):
+            res = single_image(model, i_obs)
+            Image.fromarray(res).save('../atari-objects-evaluations/epoch{:05d}_game0_{:03d}.png'.format(epoch, i_obs))
+    #
+    # test_loss /= len(test_loader.dataset)
+    # print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+    #     test_loss, correct, len(test_loader.dataset),
+    #     100. * correct / len(test_loader.dataset)))
 
-    test_loss /= len(test_loader.dataset)
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(test_loader.dataset),
-        100. * correct / len(test_loader.dataset)))
-
-def single_image(i_obs):
+def single_image(model, i_obs):
     # sample = iter(test_loader).next()
     sample, _ = train_dataset.get_sample(0, i_obs, i_obs + 1)
     res = model.forward({'first': sample['first'].unsqueeze(0), 'first_prev': sample['first_prev'].unsqueeze(0),
@@ -179,34 +179,29 @@ def single_image(i_obs):
     png = sample['first']
     xy, softmaxed, dense, dense_upscaled = model._encode(png.unsqueeze(0))
     xy = xy.detach().numpy()
-    print("XY shape", xy.shape)
+    # print("XY shape", xy.shape)
     softmaxed = softmaxed.detach().numpy()
-    xy = np.stack([np.unravel_index(np.argmax(dense_upscaled.detach().numpy()[0][i]), (80, 80)) for i in range(6)])
-    xy = xy.reshape((1, 6, 2))
-    print("XY shape2", xy.shape)
+    # xy = np.stack([np.unravel_index(np.argmax(dense_upscaled.detach().numpy()[0][i]), (80, 80)) for i in range(6)])
+    # xy = xy.reshape((1, 6, 2))
+    # print("XY shape2", xy.shape)
     x_r = xy[:, :, 0]
     y_r = xy[:, :, 1]
     r = np.zeros((80, 80, 3), np.uint8)
-    print(softmaxed[0, :, :, :])
+    # print(softmaxed[0, :, :, :])
     attention = (cv2.resize(softmaxed[0, :, :, :].transpose([1, 2, 0]), (80, 80)) / softmaxed[0, :, :,
                                                                                 :].max() * 255).astype(np.uint8)
     r[np.round(x_r).astype(np.int32), np.round(y_r).astype(np.int32), :] = [255, 0, 0]
-    print(np.array(png).dtype, attention.dtype, r.dtype)
+    # print(np.array(png).dtype, attention.dtype, r.dtype)
     repr = Image.fromarray(r).resize((320, 320))
     attention = attention[:, :, :3] + attention[:, :, 3:]
-    print(attention.shape)
+    # print(attention.shape)
     attention = Image.fromarray(attention).resize((320, 320))
-    print(np.array(repr))
+    # print(np.array(repr))
     # res = np.maximum(np.array(torchvision.transforms.ToPILImage()(png).resize((320, 320))), np.array(repr))#, np.array(attention))
     res = np.maximum(np.array(repr), np.array(attention))
-    print(attention)
+    # print(attention)
     # res = np.array(attention)
-    Image.fromarray(res).save('game0_{:03d}.png'.format(i_obs))
-
-def play(train_dataset):
-    game = train_dataset.game_data[0]
-    for i_obs, obs in enumerate(game):
-        single_image(i_obs)
+    return res
 
 
 # Max diff ustawic na 2 lub 3 ?
@@ -245,15 +240,16 @@ if __name__ == '__main__':
 
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
     data_path = '../atari-objects-observations/'
+    batch_size = 64
     train_dataset = Dataset(
         root=data_path,
         n_games=10000,
         min_diff=1,
-        max_diff=2
+        max_diff=2,
+        epoch_size=batch_size * 10
     )
-    train_loader = DataLoader(train_dataset, batch_size=64,num_workers=5,shuffle=False,
+    train_loader = DataLoader(train_dataset, batch_size=batch_size,num_workers=5,shuffle=False,
     )
-    test_loader = DataLoader(train_dataset, batch_size=1, num_workers=5, shuffle=False)
 
     def img_diff(second, first):
         return (1.0 + second - first) / 2
@@ -265,8 +261,9 @@ if __name__ == '__main__':
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(1, args.epochs + 1):
+        test(epoch, model, device, train_dataset)
         train(args, classification, model, device, train_loader, optimizer, epoch)
-        # test(args, model, device, test_loader)
+
 
 # Assumptions to be lifted in the future:
 # 1. The objects do not disappear
