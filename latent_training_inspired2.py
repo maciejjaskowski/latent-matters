@@ -3,6 +3,8 @@ from __future__ import print_function
 import cv2
 import sys
 import argparse
+import datetime
+import tqdm
 
 import numpy as np
 import torch
@@ -18,6 +20,7 @@ from torchvision.transforms import ToPILImage
 from dataset import Dataset
 from PIL import Image
 import random
+import os
 
 class Net(nn.Module):
     def __init__(self, n_input_channels, n_hidden_channels):
@@ -139,7 +142,6 @@ class Net(nn.Module):
                 "silhuette_sum_loss": silhuette_sum_loss}
 
 
-
 def train(args, classification, model, device, train_loader, optimizer, epoch):
 
     model.train()
@@ -177,36 +179,36 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
         silhuette_consistency_losses.append(silhuette_consistency_loss.item())
         silhuette_variance_losses.append(silhuette_variance_loss.item())
 
-        if batch_idx % args.log_interval == 0:
-            epoch_loss = np.mean(epoch_losses)
-            keypoint_variety_loss = np.mean(keypoint_variety_losses)
-            silhuette_sum_loss = np.mean(silhuette_sum_losses)
-            silhuette_variance_loss = np.mean(silhuette_variance_losses)
-            silhuette_consistency_loss = np.mean(silhuette_consistency_losses)
 
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {epoch_loss:.3f} '
-                  'key_var: {key_var:.3f} '
-                  'silh_sum: {silh_sum:.3f} '
-                  'silh_var: {silh_var:.3f} '
-                  'silh_cons: {silh_cons_loss:.3}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), epoch_loss=epoch_loss, #loss_move,
-                                                      key_var=keypoint_variety_loss,
-                                                      silh_sum=silhuette_sum_loss,
-                                                      silh_var=silhuette_variance_loss,
-                                                      silh_cons_loss=silhuette_consistency_loss))
-            epoch_losses = []
-            keypoint_variety_losses = []
-            silhuette_sum_losses = []
-            silhuette_variance_losses = []
-            silhuette_consistency_losses = []
+    epoch_loss = np.mean(epoch_losses)
+    keypoint_variety_loss = np.mean(keypoint_variety_losses)
+    silhuette_sum_loss = np.mean(silhuette_sum_losses)
+    silhuette_variance_loss = np.mean(silhuette_variance_losses)
+    silhuette_consistency_loss = np.mean(silhuette_consistency_losses)
+
+    print('Train Epoch: {} \tLoss: {epoch_loss:.3f} '
+          'key_var: {key_var:.3f} '
+          'silh_sum: {silh_sum:.3f} '
+          'silh_var: {silh_var:.3f} '
+          'silh_cons: {silh_cons_loss:.3}'.format(
+        epoch, epoch_loss=epoch_loss, #loss_move,
+               key_var=keypoint_variety_loss,
+               silh_sum=silhuette_sum_loss,
+               silh_var=silhuette_variance_loss,
+               silh_cons_loss=silhuette_consistency_loss))
+
+    return epoch_loss
 
 
-def test(epoch, model, device, train_dataset, T):
+
+
+def test(epoch, model, device, train_dataset, eval_path, T):
     print("Test epoch {}".format(epoch))
     model.eval()
     test_loss = 0
     correct = 0
+    epoch_path = os.path.join(eval_path, 'epoch{:05d}'.format(epoch))
+    os.makedirs(epoch_path)
     with torch.no_grad():
         game = train_dataset.game_data[0]
         for i_obs in range(len(game)-1):
@@ -222,13 +224,13 @@ def test(epoch, model, device, train_dataset, T):
                 print("keyp_var", keypoint_variety_loss.item())
             for i_attention, attention in enumerate(attentions):
                 Image.fromarray(np.uint8(np.clip(attention*255, a_min=0, a_max=255))).resize((320, 320)).save(
-                    '../atari-objects-evaluations/epoch{:05d}_game0_att_{:03d}_{:03d}.png'.format(epoch, i_attention, i_obs))
+                    os.path.join(epoch_path, 'game0_att_{:03d}_{:03d}.png'.format(epoch, i_attention, i_obs)))
             attentions = np.stack([np.clip(np.sum(np.stack(attentions, axis=2), axis=2), a_min=0.0, a_max=1.0)]*3, axis=2)
             attention_png = cv2.resize(np.uint8(attentions * 127 + png * 127), (320, 320))
-            Image.fromarray(attention_png).save('../atari-objects-evaluations/epoch{:05d}_game0_attentions_png_{:03d}.png'.format(epoch, i_obs))
-            Image.fromarray(np.uint8(xy_img*127 + png * 127)).resize((320, 320)).save('../atari-objects-evaluations/epoch{:05d}_game0_xy_png_{:03d}.png'.format(epoch, i_obs))
+            Image.fromarray(attention_png).save(os.path.join(epoch_path, 'game0_attentions_png_{:03d}.png'.format(epoch, i_obs)))
+            Image.fromarray(np.uint8(xy_img*127 + png * 127)).resize((320, 320)).save(os.path.join(epoch_path, 'game0_xy_png_{:03d}.png'.format(epoch, i_obs)))
             Image.fromarray(np.uint8(argmax_xy_img * 127 + png * 127)).resize((320, 320)).save(
-                '../atari-objects-evaluations/epoch{:05d}_game0_argmaxxy_png_{:03d}.png'.format(epoch, i_obs))
+                os.path.join(epoch_path, 'game0_argmaxxy_png_{:03d}.png'.format(epoch, i_obs)))
 
     #
     # test_loss /= len(test_loader.dataset)
@@ -304,6 +306,10 @@ if __name__ == '__main__':
     parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                         help='how many batches to wait before logging training status')
     args = parser.parse_args()
+
+
+    run_id = '{now:%Y-%m-%d-%H-%M-%S}'.format(now=datetime.datetime.now())
+
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     torch.manual_seed(args.seed)
@@ -312,13 +318,18 @@ if __name__ == '__main__':
 
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
     data_path = '../atari-objects-observations/'
+    eval_path = os.path.join('../atari-objects-evaluations/', run_id)
+    models_path = os.path.join(eval_path, "models")
+    os.makedirs(eval_path)
+    os.makedirs(models_path)
+
     batch_size = 64
     train_dataset = Dataset(
         root=data_path,
         n_games=10000,
         min_diff=1,
         max_diff=2,
-        epoch_size=batch_size * 20
+        epoch_size=batch_size * 3
     )
     train_loader = DataLoader(train_dataset, batch_size=batch_size,num_workers=5,shuffle=False,
     )
@@ -331,10 +342,21 @@ if __name__ == '__main__':
     model = Net(n_input_channels=3, n_hidden_channels=6).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    import tqdm
+
+    last_loss = None
     for epoch in tqdm.tqdm(range(1, args.epochs + 1)):
-        test(epoch, model, device, train_dataset, T=1)
-        train(args, classification, model, device, train_loader, optimizer, epoch)
+        test(epoch, model, device, train_dataset, eval_path=eval_path, T=1)
+        epoch_loss = train(args, classification, model, device, train_loader, optimizer, epoch)
+
+        if not last_loss or last_loss > epoch_loss:
+            last_loss = epoch_loss
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': epoch_loss
+            }, os.path.join(models_path,
+                            "model_{epoch:05d}_{epoch_loss:.3f}.pt".format(epoch=epoch, epoch_loss=epoch_loss)))
 
 
 
