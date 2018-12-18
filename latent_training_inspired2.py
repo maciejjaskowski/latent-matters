@@ -17,6 +17,7 @@ from torchvision.transforms import ToPILImage
 
 from dataset import Dataset
 from PIL import Image
+import random
 
 class Net(nn.Module):
     def __init__(self, n_input_channels, n_hidden_channels):
@@ -81,8 +82,8 @@ class Net(nn.Module):
             for k in range(softmaxed.shape[1]):
                 mul = softmaxed[b,k] * ((self.ran.t() - x[b,k])**2 + (self.ran - y[b,k])**2)
                 v = torch.sum(mul)
-                if b == 0 and k == 0:
-                    print(b, k, v)
+                if b == 0 and k == 0 and random.randint(0,5) == 0:
+                    print(b, k, v.item())
                 # print(softmaxed, mul, b,k,v)
                 variance.append(v)
 
@@ -107,7 +108,7 @@ class Net(nn.Module):
         # print(torch.mean(img_change, dim=[1,2]), img_change.shape)
         # silhuette_sum_loss = torch.mean(torch.stack(silhuette_sum_loss))
         # silhuette_consistency_loss = torch.mean(torch.stack(silhuette_consistency_loss))
-        return silhuette_consistency_loss, 0.0 #silhuette_sum_loss
+        return silhuette_consistency_loss, torch.Tensor([0.0])[0].to(self.device) #silhuette_sum_loss
 
     def forward(self, X):
         T = 1.0
@@ -142,6 +143,12 @@ class Net(nn.Module):
 def train(args, classification, model, device, train_loader, optimizer, epoch):
 
     model.train()
+    epoch_losses = []
+    keypoint_variety_losses = []
+    silhuette_variance_losses = []
+    silhuette_consistency_losses = []
+    silhuette_sum_losses = []
+
     for batch_idx, (data, target) in enumerate(train_loader):
         data = {key: d.to(device) for key, d in data.items()}
         target = target.to(device)
@@ -158,21 +165,41 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
         keypoint_variety_loss = output['keypoint_variety_loss']
         silhuette_sum_loss = output['silhuette_sum_loss']
         silhuette_variance_loss = 0.07 * output['silhuette_variance_loss']
+        silhuette_consistency_loss = output['silhuette_consistency_loss']
 
-
-        # loss = loss_move + output['silhuette_consistency_loss'] + output['keypoint_variety_loss'] + keypoints_consistency_loss
-        # loss = output['silhuette_consistency_loss'] + loss_move + silhuette_variance_loss + keypoint_variety_loss #keypoints_consistency_loss
-        loss = output['silhuette_consistency_loss'] + silhuette_variance_loss + keypoint_variety_loss  # keypoints_consistency_loss
+        loss = silhuette_consistency_loss + silhuette_variance_loss + keypoint_variety_loss  # keypoints_consistency_loss
         loss.backward()
         optimizer.step()
+
+        epoch_losses.append(loss.item())
+        keypoint_variety_losses.append(keypoint_variety_loss.item())
+        silhuette_sum_losses.append(silhuette_sum_loss.item())
+        silhuette_consistency_losses.append(silhuette_consistency_loss.item())
+        silhuette_variance_losses.append(silhuette_variance_loss.item())
+
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3f} key_var: {:.3f} silh_sum: {:.6f} silh_var: {:.3f} silh_cons: {:.3}'.format(
+            epoch_loss = np.mean(epoch_losses)
+            keypoint_variety_loss = np.mean(keypoint_variety_losses)
+            silhuette_sum_loss = np.mean(silhuette_sum_losses)
+            silhuette_variance_loss = np.mean(silhuette_variance_losses)
+            silhuette_consistency_loss = np.mean(silhuette_consistency_losses)
+
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {epoch_loss:.3f} '
+                  'key_var: {key_var:.3f} '
+                  'silh_sum: {silh_sum:.3f} '
+                  'silh_var: {silh_var:.3f} '
+                  'silh_cons: {silh_cons_loss:.3}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.item(), #loss_move,
-                                                                   keypoint_variety_loss,
-                                                                   silhuette_sum_loss,
-                                                                   silhuette_variance_loss,
-                                                                   output['silhuette_consistency_loss']))
+                100. * batch_idx / len(train_loader), epoch_loss=epoch_loss, #loss_move,
+                                                      key_var=keypoint_variety_loss,
+                                                      silh_sum=silhuette_sum_loss,
+                                                      silh_var=silhuette_variance_loss,
+                                                      silh_cons_loss=silhuette_consistency_loss))
+            epoch_losses = []
+            keypoint_variety_losses = []
+            silhuette_sum_losses = []
+            silhuette_variance_losses = []
+            silhuette_consistency_losses = []
 
 
 def test(epoch, model, device, train_dataset, T):
@@ -191,8 +218,8 @@ def test(epoch, model, device, train_dataset, T):
                 print("xy[10]", xy[0, :, :])
                 silhuette_variance_loss = model.silhuette_variance_loss(torch_softmaxed, x=torch_xy[:, :, 0], y=torch_xy[:, :, 1])
                 keypoint_variety_loss = model.keypoints_variety_loss(torch_xy[:, :, :])
-                print("silh_var", silhuette_variance_loss)
-                print("keyp_var", keypoint_variety_loss)
+                print("silh_var", silhuette_variance_loss.item())
+                print("keyp_var", keypoint_variety_loss.item())
             for i_attention, attention in enumerate(attentions):
                 Image.fromarray(np.uint8(np.clip(attention*255, a_min=0, a_max=255))).resize((320, 320)).save(
                     '../atari-objects-evaluations/epoch{:05d}_game0_att_{:03d}_{:03d}.png'.format(epoch, i_attention, i_obs))
@@ -218,7 +245,7 @@ def add_points(img, x, y):
                [0, 0, 1],
                [0, 0, 0.66]]
 
-    for i in range(x.shape[0]):
+    for i in range(x.shape[1]):
         img[np.round(x).astype(np.int32), np.round(y).astype(np.int32), :] = colours[i]
     return img
 
