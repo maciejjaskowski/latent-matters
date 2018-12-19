@@ -201,8 +201,6 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
     return epoch_loss
 
 
-
-
 def test(epoch, model, device, train_dataset, eval_path, T):
     print("Test epoch {}".format(epoch))
     model.eval()
@@ -270,21 +268,17 @@ def add_points(img, x, y):
 
 
 def single_image(png, xy, softmaxed, dense_upscaled):
-
     png = png.detach().cpu().numpy().copy()
     xy = xy.detach().cpu().numpy().copy()
     dense_upscaled = dense_upscaled.detach().cpu().numpy().copy()
     softmaxed = softmaxed.detach().cpu().numpy().copy()
     n_keypoints = softmaxed.shape[1]
-
     softmaxed_normed = softmaxed[0, :, :, :].transpose([1, 2, 0])
-
     argmax_xy = np.stack([np.unravel_index(np.argmax(dense_upscaled[0][i]), (80, 80)) for i in range(n_keypoints)])
     argmax_xy = argmax_xy.reshape((1, n_keypoints, 2))
     eps = 1e-7
-
     for i in range(softmaxed_normed.shape[2]):
-        softmaxed_normed[:,:,i] = softmaxed_normed[:,:,i] / (softmaxed[:, :, i].max() + eps)
+        softmaxed_normed[:, :, i] = softmaxed_normed[:,:,i] / (softmaxed_normed[:, :, i].max() + eps)
     attention = cv2.resize(softmaxed_normed, (80, 80))
     xy_img = add_points(np.zeros((80, 80, 3), np.uint8), xy[:, :, 0], xy[:, :, 1])
     argmax_xy_img = add_points(np.zeros((80, 80, 3), np.uint8), argmax_xy[:, :, 0], argmax_xy[:, :, 1])
@@ -343,6 +337,10 @@ if __name__ == '__main__':
     models_path = os.path.join(eval_path, "models")
     os.makedirs(eval_path)
     os.makedirs(models_path)
+    os.system("cp -fr . {}".format(os.path.join(data_path, "code")))
+    with open(os.path.join(data_path, "cmd.bash"), "w") as f:
+        f.write(__file__)
+        f.write(sys.argv)
 
     n_keypoints = 16
 
