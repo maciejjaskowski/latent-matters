@@ -64,7 +64,7 @@ class Net(nn.Module):
 
     def keypoints_variety_loss(self, keypoints1):
         assert len(keypoints1.shape) == 3, keypoints1.shape
-        delta = 5.0
+        delta = 10.0
         keypoint_variety_loss = torch.Tensor([0.0]).to(self.device)
         for b in range(keypoints1.shape[0]):
             for i in range(keypoints1.shape[1]):
@@ -99,12 +99,13 @@ class Net(nn.Module):
         silhuette_consistency_loss = torch.mean(torch.stack([-torch.log(eps + torch.sum(map1[b,k,:,:] * img_change[b,:,:]))
                                                              for b in range(keypoints1.shape[0]) for k in range(keypoints1.shape[1])
                                                              if torch.mean(img_change[b]) > 0]))
-            # :
+        # for b in range(map1.shape[0]):
+        #     img_change[b, :, :] - torch.sum((torch.sum(map1[b, :, :, :], dim=0))
             #     # print("SHAPE", map1.shape, img_change.shape)
             #     if torch.mean(img_change[b]) > 0:
             #         silhuette_consistency_loss.append()
             #
-            #         silhuette_sum_loss.append(-torch.log(eps + torch.sum((torch.sum(map1[b,:,:,:], dim=0) * img_change[b,:,:]))))
+            #
             #     else:
             #         print("mean negative", torch.mean(img_change[b]))
 
@@ -224,13 +225,13 @@ def test(epoch, model, device, train_dataset, eval_path, T):
                 print("keyp_var", keypoint_variety_loss.item())
             for i_attention, attention in enumerate(attentions):
                 Image.fromarray(np.uint8(np.clip(attention*255, a_min=0, a_max=255))).resize((320, 320)).save(
-                    os.path.join(epoch_path, 'game0_att_{:03d}_{:03d}.png'.format(epoch, i_attention, i_obs)))
+                    os.path.join(epoch_path, 'game0_att_{i_attention:03d}_{i_obs:03d}.png'.format(i_attention=i_attention, i_obs=i_obs)))
             attentions = np.stack([np.clip(np.sum(np.stack(attentions, axis=2), axis=2), a_min=0.0, a_max=1.0)]*3, axis=2)
             attention_png = cv2.resize(np.uint8(attentions * 127 + png * 127), (320, 320))
-            Image.fromarray(attention_png).save(os.path.join(epoch_path, 'game0_attentions_png_{:03d}.png'.format(epoch, i_obs)))
-            Image.fromarray(np.uint8(xy_img*127 + png * 127)).resize((320, 320)).save(os.path.join(epoch_path, 'game0_xy_png_{:03d}.png'.format(epoch, i_obs)))
+            Image.fromarray(attention_png).save(os.path.join(epoch_path, 'game0_attentions_png_{i_obs:03d}.png'.format(i_obs=i_obs)))
+            Image.fromarray(np.uint8(xy_img*127 + png * 127)).resize((320, 320)).save(os.path.join(epoch_path, 'game0_xy_png_{i_obs:03d}.png'.format(i_obs=i_obs)))
             Image.fromarray(np.uint8(argmax_xy_img * 127 + png * 127)).resize((320, 320)).save(
-                os.path.join(epoch_path, 'game0_argmaxxy_png_{:03d}.png'.format(epoch, i_obs)))
+                os.path.join(epoch_path, 'game0_argmaxxy_png_{i_obs:03d}.png'.format(i_obs=i_obs)))
 
     #
     # test_loss /= len(test_loader.dataset)
@@ -245,23 +246,43 @@ def add_points(img, x, y):
                [0, 1, 0],
                [0, 0.66, 0],
                [0, 0, 1],
-               [0, 0, 0.66]]
+               [0, 0, 0.66],
+               [1, 1, 0],
+               [1, 0, 1],
+               [0, 1, 1],
+               [0.66, 1, 0],
+               [0.66, 0, 1],
+               [1, 0, 1],
+               [0, 0.66, 1],
+               [0, 0.66, 1],
+
+               [1, 0, 0.66],
+               [0, 1, 0.66],
+               [0.66, 0.66, 0],
+               [0.66, 0, 0.66],
+               [0, 0.66, 0.66],
+               ]
 
     for i in range(x.shape[1]):
+
         img[np.round(x).astype(np.int32), np.round(y).astype(np.int32), :] = colours[i]
     return img
 
 
 def single_image(png, xy, softmaxed, dense_upscaled):
+
     png = png.detach().cpu().numpy().copy()
     xy = xy.detach().cpu().numpy().copy()
     dense_upscaled = dense_upscaled.detach().cpu().numpy().copy()
     softmaxed = softmaxed.detach().cpu().numpy().copy()
-    argmax_xy = np.stack([np.unravel_index(np.argmax(dense_upscaled[0][i]), (80, 80)) for i in range(6)])
-    argmax_xy = argmax_xy.reshape((1, 6, 2))
+    n_keypoints = softmaxed.shape[1]
+
     softmaxed_normed = softmaxed[0, :, :, :].transpose([1, 2, 0])
+
+    argmax_xy = np.stack([np.unravel_index(np.argmax(dense_upscaled[0][i]), (80, 80)) for i in range(n_keypoints)])
+    argmax_xy = argmax_xy.reshape((1, n_keypoints, 2))
     eps = 1e-7
-    assert softmaxed_normed.shape[2] == 6
+
     for i in range(softmaxed_normed.shape[2]):
         softmaxed_normed[:,:,i] = softmaxed_normed[:,:,i] / (softmaxed[:, :, i].max() + eps)
     attention = cv2.resize(softmaxed_normed, (80, 80))
@@ -323,23 +344,25 @@ if __name__ == '__main__':
     os.makedirs(eval_path)
     os.makedirs(models_path)
 
+    n_keypoints = 16
+
+    epoch_size = 25
     batch_size = 64
     train_dataset = Dataset(
         root=data_path,
         n_games=10000,
         min_diff=1,
         max_diff=2,
-        epoch_size=batch_size * 3
+        epoch_size=batch_size * epoch_size
     )
-    train_loader = DataLoader(train_dataset, batch_size=batch_size,num_workers=5,shuffle=False,
-    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=5, shuffle=False)
 
     def img_diff(second, first):
         return (1.0 + second - first) / 2
 
 
     classification = False
-    model = Net(n_input_channels=3, n_hidden_channels=6).to(device)
+    model = Net(n_input_channels=3, n_hidden_channels=n_keypoints).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
