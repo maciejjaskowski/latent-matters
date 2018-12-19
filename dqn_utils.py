@@ -1,58 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Reinforcement Learning (DQN) Tutorial
-=====================================
-**Author**: `Adam Paszke <https://github.com/apaszke>`_
-
-
-This tutorial shows how to use PyTorch to train a Deep Q Learning (DQN) agent
-on the CartPole-v0 task from the `OpenAI Gym <https://gym.openai.com/>`__.
-
-**Task**
-
-The agent has to decide between two actions - moving the cart left or
-right - so that the pole attached to it stays upright. You can find an
-official leaderboard with various algorithms and visualizations at the
-`Gym website <https://gym.openai.com/envs/CartPole-v0>`__.
-
-.. figure:: /_static/img/cartpole.gif
-   :alt: cartpole
-
-   cartpole
-
-As the agent observes the current state of the environment and chooses
-an action, the environment *transitions* to a new state, and also
-returns a reward that indicates the consequences of the action. In this
-task, the environment terminates if the pole falls over too far.
-
-The CartPole task is designed so that the inputs to the agent are 4 real
-values representing the environment state (position, velocity, etc.).
-However, neural networks can solve the task purely by looking at the
-scene, so we'll use a patch of the screen centered on the cart as an
-input. Because of this, our results aren't directly comparable to the
-ones from the official leaderboard - our task is much harder.
-Unfortunately this does slow down the training, because we have to
-render all the frames.
-
-Strictly speaking, we will present the state as the difference between
-the current screen patch and the previous one. This will allow the agent
-to take the velocity of the pole into account from one image.
-
-**Packages**
-
-
-First, let's import needed packages. Firstly, we need
-`gym <https://gym.openai.com/docs>`__ for the environment
-(Install using `pip install gym`).
-We'll also use the following from PyTorch:
-
--  neural networks (``torch.nn``)
--  optimization (``torch.optim``)
--  automatic differentiation (``torch.autograd``)
--  utilities for vision tasks (``torchvision`` - `a separate
-   package <https://github.com/pytorch/vision>`__).
-
-"""
 
 import gym
 import math
@@ -70,39 +16,6 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torchvision.transforms as T
-
-
-env = gym.make('Pong-v0').unwrapped
-
-# set up matplotlib
-is_ipython = 'inline' in matplotlib.get_backend()
-if is_ipython:
-    from IPython import display
-
-plt.ion()
-
-# if gpu is to be used
-device = "cpu" #torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-######################################################################
-# Replay Memory
-# -------------
-#
-# We'll be using experience replay memory for training our DQN. It stores
-# the transitions that the agent observes, allowing us to reuse this data
-# later. By sampling from it randomly, the transitions that build up a
-# batch are decorrelated. It has been shown that this greatly stabilizes
-# and improves the DQN training procedure.
-#
-# For this, we're going to need two classses:
-#
-# -  ``Transition`` - a named tuple representing a single transition in
-#    our environment
-# -  ``ReplayMemory`` - a cyclic buffer of bounded size that holds the
-#    transitions observed recently. It also implements a ``.sample()``
-#    method for selecting a random batch of transitions for training.
-#
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
@@ -131,7 +44,7 @@ class ReplayMemory(object):
 
 class DQN(nn.Module):
 
-    def __init__(self):
+    def __init__(self, action_space_size):
         super(DQN, self).__init__()
         self.conv1 = nn.Conv2d(3, 16, kernel_size=5, stride=2)
         self.bn1 = nn.BatchNorm2d(16)
@@ -139,7 +52,7 @@ class DQN(nn.Module):
         self.bn2 = nn.BatchNorm2d(32)
         self.conv3 = nn.Conv2d(32, 32, kernel_size=5, stride=2)
         self.bn3 = nn.BatchNorm2d(32)
-        self.head = nn.Linear(2240, env.action_space.n)
+        self.head = nn.Linear(2240, action_space_size)
 
     def forward(self, x):
         x = F.relu(self.bn1(self.conv1(x)))
@@ -148,21 +61,12 @@ class DQN(nn.Module):
         return self.head(x.view(x.size(0), -1))
 
 
-######################################################################
-# Input extraction
-# ^^^^^^^^^^^^^^^^
-#
-# The code below are utilities for extracting and processing rendered
-# images from the environment. It uses the ``torchvision`` package, which
-# makes it easy to compose image transforms. Once you run the cell it will
-# display an example patch that it extracted.
-#
 
 resize = T.Compose([T.ToPILImage(),
                     T.Resize(80, interpolation=Image.BICUBIC),
                     T.ToTensor()])
 
-def get_screen():
+def get_screen(env, device):
     screen = env.render(mode='rgb_array').transpose(
         (2, 0, 1))  # transpose into torch order (CHW)
     # Strip off the top and bottom of the screen
@@ -175,37 +79,6 @@ def get_screen():
     return resize(screen).unsqueeze(0).to(device)
 
 
-env.reset()
-plt.figure()
-plt.imshow(get_screen().cpu().squeeze(0).permute(1, 2, 0).numpy(),
-           interpolation='none')
-plt.title('Example extracted screen')
-plt.show()
-print("Example")
-
-
-######################################################################
-# Training
-# --------
-#
-# Hyperparameters and utilities
-# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-# This cell instantiates our model and its optimizer, and defines some
-# utilities:
-#
-# -  ``select_action`` - will select an action accordingly to an epsilon
-#    greedy policy. Simply put, we'll sometimes use our model for choosing
-#    the action, and sometimes we'll just sample one uniformly. The
-#    probability of choosing a random action will start at ``EPS_START``
-#    and will decay exponentially towards ``EPS_END``. ``EPS_DECAY``
-#    controls the rate of the decay.
-# -  ``plot_durations`` - a helper for plotting the durations of episodes,
-#    along with an average over the last 100 episodes (the measure used in
-#    the official evaluations). The plot will be underneath the cell
-#    containing the main training loop, and will update after every
-#    episode.
-#
-
 BATCH_SIZE = 128
 GAMMA = 0.999
 EPS_START = 0.9
@@ -213,19 +86,11 @@ EPS_END = 0.05
 EPS_DECAY = 200
 TARGET_UPDATE = 10
 
-policy_net = DQN().to(device)
-target_net = DQN().to(device)
-target_net.load_state_dict(policy_net.state_dict())
-target_net.eval()
-
-optimizer = optim.RMSprop(policy_net.parameters())
-memory = ReplayMemory(10000)
-
 
 steps_done = 0
 
 
-def select_action(state):
+def select_action(state, policy_net, device):
     global steps_done
     sample = random.random()
     eps_threshold = EPS_END + (EPS_START - EPS_END) * \
@@ -238,10 +103,8 @@ def select_action(state):
         return torch.tensor([[random.randrange(2)]], device=device, dtype=torch.long)
 
 
-episode_durations = []
 
-
-def plot_durations():
+def plot_durations(episode_durations, is_ipython, display):
     plt.figure(2)
     plt.clf()
     durations_t = torch.tensor(episode_durations, dtype=torch.float)
@@ -265,7 +128,7 @@ def plot_durations():
 # Training loop
 # ^^^^^^^^^^^^^
 
-def optimize_model():
+def optimize_model(memory, device, policy_net, target_net, optimizer):
     if len(memory) < BATCH_SIZE:
         return
     transitions = memory.sample(BATCH_SIZE)
@@ -302,58 +165,3 @@ def optimize_model():
         param.grad.data.clamp_(-1, 1)
     optimizer.step()
 
-
-######################################################################
-#
-# Below, you can find the main training loop. At the beginning we reset
-# the environment and initialize the ``state`` Tensor. Then, we sample
-# an action, execute it, observe the next screen and the reward (always
-# 1), and optimize our model once. When the episode ends (our model
-# fails), we restart the loop.
-#
-# Below, `num_episodes` is set small. You should download
-# the notebook and run lot more epsiodes.
-#
-
-num_episodes = 50
-for i_episode in range(num_episodes):
-    # Initialize the environment and state
-    env.reset()
-    last_screen = get_screen()
-    current_screen = get_screen()
-    state = current_screen - last_screen
-    for t in tqdm.tqdm(count()):
-        # Select and perform an action
-        action = select_action(state)
-        _, reward, done, _ = env.step(action.item())
-        reward = torch.tensor([reward], device=device)
-
-        # Observe new state
-        last_screen = current_screen
-        current_screen = get_screen()
-        if not done:
-            next_state = current_screen - last_screen
-        else:
-            next_state = None
-
-        # Store the transition in memory
-        memory.push(state, action, next_state, reward)
-
-        # Move to the next state
-        state = next_state
-
-        # Perform one step of the optimization (on the target network)
-        optimize_model()
-        if done:
-            episode_durations.append(t + 1)
-            plot_durations()
-            break
-    # Update the target network
-    if i_episode % TARGET_UPDATE == 0:
-        target_net.load_state_dict(policy_net.state_dict())
-
-print('Complete')
-env.render()
-env.close()
-plt.ioff()
-plt.show()
