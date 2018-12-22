@@ -1,6 +1,13 @@
-#FROM nvcr.io/nvidia/pytorch:18.11-py3
-FROM pytorch/pytorch:latest
-COPY requirements.txt /atari-objects/
-RUN pip install -r /atari-objects/requirements.txt
-COPY . /atari-objects
+FROM anibali/pytorch:cuda-9.0
+RUN conda install jupyter -y --quiet
+#RUN /opt/conda/bin/conda install -c pytorch pytorch=1.0.0 torchvision=0.2.1
+RUN pip install matplotlib
+USER root
+RUN apt-get update -qqy && apt-get install -yqq \
+        curl \
+        openssh-client \
+        openssh-server \
+        git \
+        vim
+COPY sshd_config /etc/ssh/sshd_config
 
