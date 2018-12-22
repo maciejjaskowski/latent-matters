@@ -23,7 +23,7 @@ import random
 import os
 
 class Net(nn.Module):
-    def __init__(self, n_input_channels, n_hidden_channels):
+    def __init__(self, n_input_channels, n_hidden_channels, device):
         super(Net, self).__init__()
         self.n_hidden_channels = n_hidden_channels
         self.conv1 = nn.Conv2d(n_input_channels, 20, kernel_size=3, dilation=1)
@@ -96,6 +96,9 @@ class Net(nn.Module):
         # silhuette_consistency_loss = []
         # silhuette_sum_loss = []
         eps = 1e-7
+        # print(keypoints1)
+        if torch.mean(img_change) == 0.0:
+            return torch.Tensor([0.0])[0].to(self.device), torch.Tensor([0.0])[0].to(self.device),
         silhuette_consistency_loss = torch.mean(torch.stack([-torch.log(eps + torch.sum(map1[b,k,:,:] * img_change[b,:,:]))
                                                              for b in range(keypoints1.shape[0]) for k in range(keypoints1.shape[1])
                                                              if torch.mean(img_change[b]) > 0]))
@@ -359,7 +362,7 @@ if __name__ == '__main__':
 
 
     classification = False
-    model = Net(n_input_channels=3, n_hidden_channels=n_keypoints).to(device)
+    model = Net(n_input_channels=3, n_hidden_channels=n_keypoints, device=device).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
