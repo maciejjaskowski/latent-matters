@@ -4,3 +4,4 @@ __pycache__
 .cache
 game0*.png
 out.mp4
+sshd_config
