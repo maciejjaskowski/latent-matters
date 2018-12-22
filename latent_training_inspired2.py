@@ -262,8 +262,7 @@ def add_points(img, x, y):
                ]
 
     for i in range(x.shape[1]):
-
-        img[np.round(x).astype(np.int32), np.round(y).astype(np.int32), :] = colours[i]
+        img[np.round(x[0, i]).astype(np.int32), np.round(y[0, i]).astype(np.int32), :] = colours[i]
     return img
 
 
