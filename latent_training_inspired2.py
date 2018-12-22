@@ -50,7 +50,7 @@ class Net(nn.Module):
         return x_v, y_v, softmaxed
 
     def _encode(self, x, T):
-
+        # print(x.shape)
         x2 = F.relu(self.conv1(x-0.33))
         x3 = F.relu(self.conv2(x2))
 
@@ -85,8 +85,8 @@ class Net(nn.Module):
             for k in range(softmaxed.shape[1]):
                 mul = softmaxed[b,k] * ((self.ran.t() - x[b,k])**2 + (self.ran - y[b,k])**2)
                 v = torch.sum(mul)
-                if b == 0 and k == 0 and random.randint(0,5) == 0:
-                    print(b, k, v.item())
+                # if b == 0 and k == 0 and random.randint(0,5) == 0:
+                #     print(b, k, v.item())
                 # print(softmaxed, mul, b,k,v)
                 variance.append(v)
 
@@ -118,16 +118,20 @@ class Net(nn.Module):
         return silhuette_consistency_loss, torch.Tensor([0.0])[0].to(self.device) #silhuette_sum_loss
 
     def forward(self, X):
+        assert list(X['first'].shape[1:]) == [3, 80, 80], X['first'].shape
         T = 1.0
+        # print(X)
+        # z  = self._encode(X['first'], T=T)
+        # print("XX", len(z))
         keypoints1, map1, _, _ = self._encode(X['first'], T=T)
-        # keypoints1_prev, _, _, _ = self._encode(X['first_prev'], T=T)
-        # keypoints2, map2, _, _ = self._encode(X['second'], T=T)
+        keypoints1_prev, _, _, _ = self._encode(X['first_prev'], T=T)
+        keypoints2, map2, _, _ = self._encode(X['second'], T=T)
 
         # img_change = torch.sum(((torch.abs(X['first'] - X['second']) > 0)).float(), dim=1)
         img_change = (torch.sum(torch.abs(X['first_prev'] - X['first']), dim=1) > 0).float()
 
         # print("img_change", img_change.shape)
-        # print("keypoints", keypoints1[0])
+        # print("keypoints", keypoints1.shape)
 
         silhuette_variance_loss = self.silhuette_variance_loss(map1, x=keypoints1[:,:,0], y=keypoints1[:,:,1])
         keypoint_variety_loss = self.keypoints_variety_loss(keypoints1)
@@ -135,8 +139,8 @@ class Net(nn.Module):
 
 
         return {"keypoints1": keypoints1,
-                # "keypoints2": keypoints2,
-                # "keypoints1_prev": keypoints1_prev,
+                "keypoints2": keypoints2,
+                "keypoints1_prev": keypoints1_prev,
                 "map1": map1,
                 # "map2": map2,
                 "img_change": img_change,
@@ -155,25 +159,26 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
     silhuette_consistency_losses = []
     silhuette_sum_losses = []
 
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for batch_idx, (data, target) in tqdm.tqdm(enumerate(train_loader)):
         data = {key: d.to(device) for key, d in data.items()}
         target = target.to(device)
         optimizer.zero_grad()
         output = model(data)
 
-        # loss_move = []
-        # for b in range(output['keypoints1'].shape[0]):
-        #     for k in range(output['keypoints1'].shape[1]):
-        #         loss_move.append(
-        #             ((output['keypoints1'][b,k] - output['keypoints1_prev'][b,k]) * target[b] - (output['keypoints2'][b,k] - output['keypoints1_prev'][b,k]))**2)
-        # loss_move = 0.1 * torch.mean(torch.stack(loss_move))
+        move_loss = []
+        for b in range(output['keypoints1'].shape[0]):
+            for k in range(output['keypoints1'].shape[1]):
+                move_loss.append(
+                    ((output['keypoints1'][b,k] - output['keypoints1_prev'][b,k]) * target[b] - (output['keypoints2'][b,k] - output['keypoints1_prev'][b,k]))**2)
+
+        move_loss = torch.mean(torch.stack(move_loss))
         # Chce zeby keypoint_variaty loss nie bylo duzy, ale gwaltownie rosl
         keypoint_variety_loss = output['keypoint_variety_loss']
         silhuette_sum_loss = output['silhuette_sum_loss']
         silhuette_variance_loss = 0.07 * output['silhuette_variance_loss']
         silhuette_consistency_loss = output['silhuette_consistency_loss']
 
-        loss = silhuette_consistency_loss + silhuette_variance_loss + keypoint_variety_loss  # keypoints_consistency_loss
+        loss = silhuette_consistency_loss + silhuette_variance_loss + keypoint_variety_loss + move_loss # keypoints_consistency_loss
         loss.backward()
         optimizer.step()
 
@@ -194,12 +199,14 @@ def train(args, classification, model, device, train_loader, optimizer, epoch):
           'key_var: {key_var:.3f} '
           'silh_sum: {silh_sum:.3f} '
           'silh_var: {silh_var:.3f} '
-          'silh_cons: {silh_cons_loss:.3}'.format(
+          'silh_cons: {silh_cons_loss:.3f} '
+          'move: {move_loss:.3f}'.format(
         epoch, epoch_loss=epoch_loss, #loss_move,
                key_var=keypoint_variety_loss,
                silh_sum=silhuette_sum_loss,
                silh_var=silhuette_variance_loss,
-               silh_cons_loss=silhuette_consistency_loss))
+               silh_cons_loss=silhuette_consistency_loss,
+               move_loss=move_loss))
 
     return epoch_loss
 
@@ -342,7 +349,7 @@ if __name__ == '__main__':
     os.system("cp -fr . {}".format(os.path.join(data_path, "code")))
     with open(os.path.join(data_path, "cmd.bash"), "w") as f:
         f.write(__file__)
-        f.write(sys.argv)
+        f.write(" ".join(sys.argv))
 
     n_keypoints = 16
 
