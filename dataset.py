@@ -64,11 +64,11 @@ class Dataset(data.Dataset):
 
     def get_sample(self, game_index, index1, index2):
         assert index1 <= index2
-        prefix = "../atari-objects-"
+        prefix = "../atari-objects-observations/"
         first = prefix + self.game_data[game_index][index1]['png']
         first_prev = prefix + self.game_data[game_index][index1]['prev_png']
 
-        second = "../atari-objects-" + self.game_data[game_index][index2]['png']
+        second = prefix + self.game_data[game_index][index2]['png']
         second_prev = prefix + self.game_data[game_index][index2]['prev_png']
 
         return {"first": self.transform(Image.open(first)),

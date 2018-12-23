@@ -23,9 +23,10 @@ import random
 import os
 
 class Net(nn.Module):
-    def __init__(self, n_input_channels, n_hidden_channels, device):
+    def __init__(self, n_input_channels, n_hidden_channels, device, batch_size):
         super(Net, self).__init__()
         self.n_hidden_channels = n_hidden_channels
+        self.batch_size = batch_size
         self.conv1 = nn.Conv2d(n_input_channels, 20, kernel_size=3, dilation=1)
         self.conv2 = nn.Conv2d(20, 30, kernel_size=3, dilation=1, stride=1)
 
@@ -41,12 +42,14 @@ class Net(nn.Module):
         self.device = device
 
         self.ran = torch.Tensor([range(80)] * 80).to(self.device)
+        self.ran_y = torch.stack([torch.stack([self.ran] * n_hidden_channels, dim=0)] * self.batch_size, dim=0)
+        self.ran_x = torch.stack([torch.stack([self.ran.t()] * n_hidden_channels, dim=0)] * self.batch_size, dim=0)
 
     def _softargmax(self, x4, T):
         softmaxed = F.softmax(T*x4.reshape([-1, x4.shape[1], x4.shape[2]*x4.shape[3]]), dim=-1).reshape(x4.shape)  #, _stacklevel=5)
 
-        y_v = (softmaxed * torch.stack([torch.stack([self.ran] * softmaxed.shape[1], dim=0)] * softmaxed.shape[0], dim=0)).sum(dim=[2,3])
-        x_v = (softmaxed * torch.stack([torch.stack([self.ran.t()] * softmaxed.shape[1], dim=0)] * softmaxed.shape[0], dim=0)).sum(dim=[2, 3])
+        y_v = (softmaxed * self.ran_y[:softmaxed.shape[0]]).sum(dim=[2,3])
+        x_v = (softmaxed * self.ran_x[:softmaxed.shape[0]]).sum(dim=[2, 3])
         return x_v, y_v, softmaxed
 
     def _encode(self, x, T):
@@ -65,6 +68,22 @@ class Net(nn.Module):
     def keypoints_variety_loss(self, keypoints1):
         assert len(keypoints1.shape) == 3, keypoints1.shape
         delta = 10.0
+        keypoint_variety_loss = torch.Tensor([0.0]).to(self.device)[0]
+
+        batch_size = keypoints1.shape[0]
+
+        for i in range(keypoints1.shape[1]):
+            for j in range(keypoints1.shape[1]):
+                if i != j:
+                    cur = torch.max(delta ** 2 - torch.sum((keypoints1[:, i, :] - keypoints1[:, j, :]) ** 2, dim=1),
+                                    torch.Tensor([0.0]*batch_size).to(self.device))
+                    # print(i,j,cur)
+                    keypoint_variety_loss += cur.mean()
+        return keypoint_variety_loss / (keypoints1.shape[1] ** 2)
+
+    def keypoints_variety_loss_slow(self, keypoints1):
+        assert len(keypoints1.shape) == 3, keypoints1.shape
+        delta = 10.0
         keypoint_variety_loss = torch.Tensor([0.0]).to(self.device)
         for b in range(keypoints1.shape[0]):
             for i in range(keypoints1.shape[1]):
@@ -76,13 +95,14 @@ class Net(nn.Module):
                         keypoint_variety_loss += cur
         return keypoint_variety_loss[0] / (keypoints1.shape[0] * keypoints1.shape[1] ** 2)
 
-    def silhuette_variance_loss(self, softmaxed, x, y):
-        assert len(softmaxed.shape) == 4
+    def silhuette_variance_loss_slow(self, softmaxed, x, y):
+        assert len(softmaxed.shape) == 4, softmaxed
         assert len(x.shape) == 2, len(x.shape)
         assert len(y.shape) == 2, len(y.shape)
         variance = []
         for b in range(softmaxed.shape[0]):
             for k in range(softmaxed.shape[1]):
+                print(b,k)
                 mul = softmaxed[b,k] * ((self.ran.t() - x[b,k])**2 + (self.ran - y[b,k])**2)
                 v = torch.sum(mul)
                 # if b == 0 and k == 0 and random.randint(0,5) == 0:
@@ -90,32 +110,33 @@ class Net(nn.Module):
                 # print(softmaxed, mul, b,k,v)
                 variance.append(v)
 
-        return torch.mean(torch.stack(variance))
+        return torch.mean(v)
 
-    def losses(self, keypoints1, map1, img_change):
-        # silhuette_consistency_loss = []
-        # silhuette_sum_loss = []
+    def silhuette_variance_loss(self, softmaxed, x, y):
+        assert len(softmaxed.shape) == 4, softmaxed
+        assert len(x.shape) == 2, len(x.shape)
+        assert len(y.shape) == 2, len(y.shape)
+        assert x.shape[1] == softmaxed.shape[1], "{} != {}".format(x.shape[1], softmaxed.shape[1])
+
+        mul = softmaxed * ((self.ran_x[:softmaxed.shape[0]] - x.expand([80, 80, self.batch_size,softmaxed.shape[1]]).permute(2,3,0,1))**2 +
+                           (self.ran_y[:softmaxed.shape[0]] - y.expand([80, 80, self.batch_size,softmaxed.shape[1]]).permute(2,3,0,1))**2)
+        v = torch.sum(mul, dim=[2, 3])
+
+        return torch.mean(v)
+
+    def silhuette_consistency_loss(self, keypoints1, map1, img_change):
         eps = 1e-7
         # print(keypoints1)
         if torch.mean(img_change) == 0.0:
             return torch.Tensor([0.0])[0].to(self.device), torch.Tensor([0.0])[0].to(self.device),
-        silhuette_consistency_loss = torch.mean(torch.stack([-torch.log(eps + torch.sum(map1[b,k,:,:] * img_change[b,:,:]))
-                                                             for b in range(keypoints1.shape[0]) for k in range(keypoints1.shape[1])
-                                                             if torch.mean(img_change[b]) > 0]))
-        # for b in range(map1.shape[0]):
-        #     img_change[b, :, :] - torch.sum((torch.sum(map1[b, :, :, :], dim=0))
-            #     # print("SHAPE", map1.shape, img_change.shape)
-            #     if torch.mean(img_change[b]) > 0:
-            #         silhuette_consistency_loss.append()
-            #
-            #
-            #     else:
-            #         print("mean negative", torch.mean(img_change[b]))
 
-        # print(torch.mean(img_change, dim=[1,2]), img_change.shape)
-        # silhuette_sum_loss = torch.mean(torch.stack(silhuette_sum_loss))
-        # silhuette_consistency_loss = torch.mean(torch.stack(silhuette_consistency_loss))
-        return silhuette_consistency_loss, torch.Tensor([0.0])[0].to(self.device) #silhuette_sum_loss
+        print("YYY", img_change.expand([keypoints1.shape[1],] + list(img_change.shape)).shape)
+        img_change = img_change.expand([keypoints1.shape[1],] + list(img_change.shape)).permute(1,0,2,3)
+        img_change_exists = (torch.mean(img_change, dim=[2, 3]) > 0).float()
+
+        res = -torch.log(eps + torch.sum(map1 * img_change, dim=[2, 3])) * img_change_exists
+
+        return torch.mean(res)
 
     def forward(self, X):
         assert list(X['first'].shape[1:]) == [3, 80, 80], X['first'].shape
@@ -135,7 +156,7 @@ class Net(nn.Module):
 
         silhuette_variance_loss = self.silhuette_variance_loss(map1, x=keypoints1[:,:,0], y=keypoints1[:,:,1])
         keypoint_variety_loss = self.keypoints_variety_loss(keypoints1)
-        silhuette_consistency_loss, silhuette_sum_loss = self.losses(keypoints1=keypoints1, map1=map1, img_change=img_change)
+        silhuette_consistency_loss = self.silhuette_consistency_loss(keypoints1=keypoints1, map1=map1, img_change=img_change)
 
 
         return {"keypoints1": keypoints1,
@@ -146,67 +167,99 @@ class Net(nn.Module):
                 "img_change": img_change,
                 "keypoint_variety_loss": keypoint_variety_loss,
                 "silhuette_consistency_loss": silhuette_consistency_loss,
-                "silhuette_variance_loss": silhuette_variance_loss,
-                "silhuette_sum_loss": silhuette_sum_loss}
+                "silhuette_variance_loss": silhuette_variance_loss}
 
 
-def train(args, classification, model, device, train_loader, optimizer, epoch):
+def move_loss_slow(keypoints2, target, keypoints1, keypoints1_prev):
+    move_loss = []
+    for b in range(keypoints1.shape[0]):
+        for k in range(keypoints1.shape[1]):
+            move_loss.append(
+                ((keypoints1[b, k] - keypoints1_prev[b, k]) * (target[b] + 1) - (
+                  keypoints2[b, k] - keypoints1_prev[b, k])) ** 2)
+
+    return torch.mean(torch.stack(move_loss))
+
+
+def move_loss(keypoints2, target, keypoints1, keypoints1_prev):
+    target = target.expand([keypoints2.shape[1], 2, keypoints2.shape[0]]).permute(2, 0, 1)
+    res = ((keypoints1 - keypoints1_prev) * (target + 1) - (keypoints2 - keypoints1_prev)) ** 2
+    return torch.mean(res)
+
+
+def log_scalars(scalars, log_file):
+    with open(log_file, "a") as f:
+        for k, v in scalars.items():
+            log(k, v, f)
+
+
+def log(key, value, f):
+    assert type(key) == str and not ":" in key
+    f.write("@@@ {key}: {value}".format(key, value))
+
+
+def train(model, device, train_loader, optimizer, epoch, alpha, log_scalars, log_iter_time=False):
 
     model.train()
     epoch_losses = []
     keypoint_variety_losses = []
     silhuette_variance_losses = []
     silhuette_consistency_losses = []
-    silhuette_sum_losses = []
+    # silhuette_sum_losses = []
 
-    for batch_idx, (data, target) in tqdm.tqdm(enumerate(train_loader)):
+    if log_iter_time:
+        log_iter_time = tqdm.tqdm
+    else:
+        log_iter_time = lambda x: x
+
+    for batch_idx, (data, target) in log_iter_time(enumerate(train_loader)):
         data = {key: d.to(device) for key, d in data.items()}
         target = target.to(device)
         optimizer.zero_grad()
         output = model(data)
 
-        move_loss = []
-        for b in range(output['keypoints1'].shape[0]):
-            for k in range(output['keypoints1'].shape[1]):
-                move_loss.append(
-                    ((output['keypoints1'][b,k] - output['keypoints1_prev'][b,k]) * target[b] - (output['keypoints2'][b,k] - output['keypoints1_prev'][b,k]))**2)
+        a_move_loss = alpha.get('move_loss', 1.0) * move_loss(keypoints2=output['keypoints2'], target=target,
+                                                            keypoints1=output['keypoints1'],
+                                                            keypoints1_prev=output['keypoints1_prev'])
 
-        move_loss = torch.mean(torch.stack(move_loss))
         # Chce zeby keypoint_variaty loss nie bylo duzy, ale gwaltownie rosl
-        keypoint_variety_loss = output['keypoint_variety_loss']
-        silhuette_sum_loss = output['silhuette_sum_loss']
-        silhuette_variance_loss = 0.07 * output['silhuette_variance_loss']
-        silhuette_consistency_loss = output['silhuette_consistency_loss']
+        keypoint_variety_loss = alpha.get('keypoint_variety_loss', 1.0) * output['keypoint_variety_loss']
+        # silhuette_sum_loss = alpha.get('silhuette_sum_loss', 1.0) * output['silhuette_sum_loss']
+        silhuette_variance_loss = alpha.get('silhuette_variance_loss', 1.0) * output['silhuette_variance_loss']
+        silhuette_consistency_loss = alpha.get('silhuette_consistency_loss', 1.0) * output['silhuette_consistency_loss']
 
-        loss = silhuette_consistency_loss + silhuette_variance_loss + keypoint_variety_loss + move_loss # keypoints_consistency_loss
+        loss = silhuette_consistency_loss + silhuette_variance_loss + keypoint_variety_loss + a_move_loss
         loss.backward()
         optimizer.step()
 
         epoch_losses.append(loss.item())
         keypoint_variety_losses.append(keypoint_variety_loss.item())
-        silhuette_sum_losses.append(silhuette_sum_loss.item())
+        # silhuette_sum_losses.append(silhuette_sum_loss.item())
         silhuette_consistency_losses.append(silhuette_consistency_loss.item())
         silhuette_variance_losses.append(silhuette_variance_loss.item())
+        del loss
 
 
     epoch_loss = np.mean(epoch_losses)
     keypoint_variety_loss = np.mean(keypoint_variety_losses)
-    silhuette_sum_loss = np.mean(silhuette_sum_losses)
+    # silhuette_sum_loss = np.mean(silhuette_sum_losses)
     silhuette_variance_loss = np.mean(silhuette_variance_losses)
     silhuette_consistency_loss = np.mean(silhuette_consistency_losses)
+    losses = dict(epoch_loss=epoch_loss,
+               key_var=keypoint_variety_loss,
+               # silh_sum=silhuette_sum_loss,
+               silh_var=silhuette_variance_loss,
+               silh_cons_loss=silhuette_consistency_loss,
+               move_loss=a_move_loss)
 
     print('Train Epoch: {} \tLoss: {epoch_loss:.3f} '
           'key_var: {key_var:.3f} '
-          'silh_sum: {silh_sum:.3f} '
           'silh_var: {silh_var:.3f} '
           'silh_cons: {silh_cons_loss:.3f} '
           'move: {move_loss:.3f}'.format(
-        epoch, epoch_loss=epoch_loss, #loss_move,
-               key_var=keypoint_variety_loss,
-               silh_sum=silhuette_sum_loss,
-               silh_var=silhuette_variance_loss,
-               silh_cons_loss=silhuette_consistency_loss,
-               move_loss=move_loss))
+        epoch, **losses
+    ))
+    log_scalars(losses)
 
     return epoch_loss
 
@@ -315,68 +368,80 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
-    parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
-                        help='input batch size for testing (default: 1000)')
+    parser.add_argument('--n-data-loader-workers', type=int, default=5)
+    parser.add_argument('--log-iter-time', action="store_true")
+
     parser.add_argument('--epochs', type=int, default=100, metavar='N',
                         help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                         help='learning rate (default: 0.01)')
-    parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
-                        help='SGD momentum (default: 0.5)')
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
                         help='random seed (default: 1)')
+    parser.add_argument('--n-keypoints', type=int, required=True)
+    parser.add_argument('--max-diff', type=int, required=True)
+    parser.add_argument('--alpha', action='append')
     parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                         help='how many batches to wait before logging training status')
     args = parser.parse_args()
 
 
+
     run_id = '{now:%Y-%m-%d-%H-%M-%S}'.format(now=datetime.datetime.now())
+    print("Run id {}".format(run_id))
 
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     torch.manual_seed(args.seed)
 
+    torch.set_num_threads(8)
     device = torch.device("cuda" if use_cuda else "cpu")
+    alpha = dict([a.split("=") for a in args.alpha])
+    alpha = {k: torch.Tensor([float(v)]).to(device)[0] for k, v in alpha.items()}
 
-    kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
     data_path = '../atari-objects-observations/'
     eval_path = os.path.join('../atari-objects-evaluations/', run_id)
+    scalars_log_filename = os.path.join(eval_path, 'logs')
     models_path = os.path.join(eval_path, "models")
     os.makedirs(eval_path)
     os.makedirs(models_path)
-    os.system("cp -fr . {}".format(os.path.join(data_path, "code")))
+    os.system("cp -fr . {}".format(os.path.join(eval_path, "code")))
     with open(os.path.join(data_path, "cmd.bash"), "w") as f:
         f.write(__file__)
         f.write(" ".join(sys.argv))
 
-    n_keypoints = 16
+
+    n_keypoints = args.n_keypoints
 
     epoch_size = 25
-    batch_size = 64
+    batch_size = args.batch_size
     train_dataset = Dataset(
         root=data_path,
         n_games=10000,
         min_diff=1,
-        max_diff=2,
+        max_diff=args.max_diff,
         epoch_size=batch_size * epoch_size
     )
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=5, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=args.n_data_loader_workers,
+                              shuffle=False,  # It's shuffled anyway
+                              pin_memory=use_cuda)
 
     def img_diff(second, first):
         return (1.0 + second - first) / 2
 
 
     classification = False
-    model = Net(n_input_channels=3, n_hidden_channels=n_keypoints, device=device).to(device)
+    model = Net(n_input_channels=3, n_hidden_channels=n_keypoints, device=device, batch_size=batch_size).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     last_loss = None
     for epoch in tqdm.tqdm(range(1, args.epochs + 1)):
         test(epoch, model, device, train_dataset, eval_path=eval_path, T=1)
-        epoch_loss = train(args, classification, model, device, train_loader, optimizer, epoch)
+        epoch_loss = train(model, device, train_loader, optimizer, epoch, alpha=alpha,
+                           log_scalars=lambda epoch, scalars: log_scalars(epoch, scalars, scalars_log_filename),
+                           log_iter_time=args.log_iter_time)
 
         if not last_loss or last_loss > epoch_loss:
             last_loss = epoch_loss
