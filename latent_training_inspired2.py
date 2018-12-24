@@ -55,7 +55,8 @@ class Net(nn.Module):
     def _encode(self, x, T):
         # print(x.shape)
         x2 = F.relu(self.conv1(x-0.33))
-        x3 = F.relu(self.conv2(x2))
+        x3 = F.relu(self.bn(self.conv2(x2)))
+
 
         dense_upscaled = F.interpolate(self.conv3(x3), size=(80, 80), mode='bilinear', align_corners=False)
         x_v, y_v, softmaxed = self._softargmax(dense_upscaled, T=T)
@@ -130,7 +131,6 @@ class Net(nn.Module):
         if torch.mean(img_change) == 0.0:
             return torch.Tensor([0.0])[0].to(self.device), torch.Tensor([0.0])[0].to(self.device),
 
-        print("YYY", img_change.expand([keypoints1.shape[1],] + list(img_change.shape)).shape)
         img_change = img_change.expand([keypoints1.shape[1],] + list(img_change.shape)).permute(1,0,2,3)
         img_change_exists = (torch.mean(img_change, dim=[2, 3]) > 0).float()
 
@@ -187,15 +187,16 @@ def move_loss(keypoints2, target, keypoints1, keypoints1_prev):
     return torch.mean(res)
 
 
-def log_scalars(scalars, log_file):
+def log_scalars(epoch,  scalars, log_file):
     with open(log_file, "a") as f:
         for k, v in scalars.items():
-            log(k, v, f)
+            log(epoch, k, v, f)
 
-
-def log(key, value, f):
+import json
+def log(epoch, key, value, f):
     assert type(key) == str and not ":" in key
-    f.write("@@@ {key}: {value}".format(key, value))
+    f.write(json.dumps(dict(epoch=epoch, key=key, value=value)))
+    f.write("\n")
 
 
 def train(model, device, train_loader, optimizer, epoch, alpha, log_scalars, log_iter_time=False):
@@ -250,7 +251,7 @@ def train(model, device, train_loader, optimizer, epoch, alpha, log_scalars, log
                # silh_sum=silhuette_sum_loss,
                silh_var=silhuette_variance_loss,
                silh_cons_loss=silhuette_consistency_loss,
-               move_loss=a_move_loss)
+               move_loss=a_move_loss.item())
 
     print('Train Epoch: {} \tLoss: {epoch_loss:.3f} '
           'key_var: {key_var:.3f} '
@@ -259,7 +260,7 @@ def train(model, device, train_loader, optimizer, epoch, alpha, log_scalars, log
           'move: {move_loss:.3f}'.format(
         epoch, **losses
     ))
-    log_scalars(losses)
+    log_scalars(epoch=epoch, scalars=losses)
 
     return epoch_loss
 
@@ -370,6 +371,7 @@ if __name__ == '__main__':
                         help='input batch size for training (default: 64)')
     parser.add_argument('--n-data-loader-workers', type=int, default=5)
     parser.add_argument('--log-iter-time', action="store_true")
+    parser.add_argument('--suffix', type=str, required=True)
 
     parser.add_argument('--epochs', type=int, default=100, metavar='N',
                         help='number of epochs to train (default: 10)')
@@ -388,7 +390,7 @@ if __name__ == '__main__':
 
 
 
-    run_id = '{now:%Y-%m-%d-%H-%M-%S}'.format(now=datetime.datetime.now())
+    run_id = '{now:%Y-%m-%d-%H-%M-%S}-{suffix}'.format(now=datetime.datetime.now(), suffix=args.suffix)
     print("Run id {}".format(run_id))
 
     use_cuda = not args.no_cuda and torch.cuda.is_available()
