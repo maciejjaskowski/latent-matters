@@ -5,6 +5,7 @@ import sys
 import argparse
 import datetime
 import tqdm
+import json
 
 import numpy as np
 import torch
@@ -18,13 +19,14 @@ from torchvision import datasets, transforms
 from torchvision.transforms import ToPILImage
 
 from dataset import Dataset
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import random
 import os
 
 class Net(nn.Module):
     def __init__(self, n_input_channels, n_hidden_channels, device, batch_size):
         super(Net, self).__init__()
+        self._size = 84
         self.n_hidden_channels = n_hidden_channels
         self.batch_size = batch_size
         self.conv1 = nn.Conv2d(n_input_channels, 20, kernel_size=3, dilation=1)
@@ -41,7 +43,7 @@ class Net(nn.Module):
 
         self.device = device
 
-        self.ran = torch.Tensor([range(80)] * 80).to(self.device)
+        self.ran = torch.Tensor([range(self._size)] * self._size).to(self.device)
         self.ran_y = torch.stack([torch.stack([self.ran] * n_hidden_channels, dim=0)] * self.batch_size, dim=0)
         self.ran_x = torch.stack([torch.stack([self.ran.t()] * n_hidden_channels, dim=0)] * self.batch_size, dim=0)
 
@@ -58,7 +60,7 @@ class Net(nn.Module):
         x3 = F.relu(self.bn(self.conv2(x2)))
 
 
-        dense_upscaled = F.interpolate(self.conv3(x3), size=(80, 80), mode='bilinear', align_corners=False)
+        dense_upscaled = F.interpolate(self.conv3(x3), size=(self._size, self._size), mode='bilinear', align_corners=False)
         x_v, y_v, softmaxed = self._softargmax(dense_upscaled, T=T)
         assert list(x_v.shape)[1:] == [self.n_hidden_channels], (list(x_v.shape)[1:], [self.n_hidden_channels])
         xy = torch.stack([x_v, y_v], dim=2)
@@ -119,27 +121,34 @@ class Net(nn.Module):
         assert len(y.shape) == 2, len(y.shape)
         assert x.shape[1] == softmaxed.shape[1], "{} != {}".format(x.shape[1], softmaxed.shape[1])
 
-        mul = softmaxed * ((self.ran_x[:softmaxed.shape[0]] - x.expand([80, 80, self.batch_size,softmaxed.shape[1]]).permute(2,3,0,1))**2 +
-                           (self.ran_y[:softmaxed.shape[0]] - y.expand([80, 80, self.batch_size,softmaxed.shape[1]]).permute(2,3,0,1))**2)
+        mul = softmaxed * ((self.ran_x[:softmaxed.shape[0]] - x.expand([self._size, self._size, self.batch_size,softmaxed.shape[1]]).permute(2,3,0,1))**2 +
+                           (self.ran_y[:softmaxed.shape[0]] - y.expand([self._size, self._size, self.batch_size,softmaxed.shape[1]]).permute(2,3,0,1))**2)
         v = torch.sum(mul, dim=[2, 3])
 
         return torch.mean(v)
 
     def silhuette_consistency_loss(self, keypoints1, map1, img_change):
+        assert len(keypoints1.shape) == 3
+        assert len(map1.shape) == 4
+        assert len(img_change.shape) == 3
         eps = 1e-7
         # print(keypoints1)
         if torch.mean(img_change) == 0.0:
-            return torch.Tensor([0.0])[0].to(self.device), torch.Tensor([0.0])[0].to(self.device),
+            return torch.Tensor([0.0])[0].to(self.device)
 
         img_change = img_change.expand([keypoints1.shape[1],] + list(img_change.shape)).permute(1,0,2,3)
         img_change_exists = (torch.mean(img_change, dim=[2, 3]) > 0).float()
-
+        # print("XXX", map1.shape, img_change.shape)
         res = -torch.log(eps + torch.sum(map1 * img_change, dim=[2, 3])) * img_change_exists
 
         return torch.mean(res)
 
+    @staticmethod
+    def img_change(X):
+        return (torch.sum(torch.abs(X['first_prev'] - X['first']), dim=1) > 0).float()
+
     def forward(self, X):
-        assert list(X['first'].shape[1:]) == [3, 80, 80], X['first'].shape
+        assert list(X['first'].shape[1:]) == [3, self._size, self._size], X['first'].shape
         T = 1.0
         # print(X)
         # z  = self._encode(X['first'], T=T)
@@ -148,15 +157,16 @@ class Net(nn.Module):
         keypoints1_prev, _, _, _ = self._encode(X['first_prev'], T=T)
         keypoints2, map2, _, _ = self._encode(X['second'], T=T)
 
-        # img_change = torch.sum(((torch.abs(X['first'] - X['second']) > 0)).float(), dim=1)
-        img_change = (torch.sum(torch.abs(X['first_prev'] - X['first']), dim=1) > 0).float()
+        _img_change = self.img_change(X)
+
 
         # print("img_change", img_change.shape)
         # print("keypoints", keypoints1.shape)
 
         silhuette_variance_loss = self.silhuette_variance_loss(map1, x=keypoints1[:,:,0], y=keypoints1[:,:,1])
         keypoint_variety_loss = self.keypoints_variety_loss(keypoints1)
-        silhuette_consistency_loss = self.silhuette_consistency_loss(keypoints1=keypoints1, map1=map1, img_change=img_change)
+        silhuette_consistency_loss = self.silhuette_consistency_loss(keypoints1=keypoints1, map1=map1,
+                                                                     img_change=_img_change)
 
 
         return {"keypoints1": keypoints1,
@@ -164,7 +174,7 @@ class Net(nn.Module):
                 "keypoints1_prev": keypoints1_prev,
                 "map1": map1,
                 # "map2": map2,
-                "img_change": img_change,
+                "img_change": _img_change,
                 "keypoint_variety_loss": keypoint_variety_loss,
                 "silhuette_consistency_loss": silhuette_consistency_loss,
                 "silhuette_variance_loss": silhuette_variance_loss}
@@ -192,7 +202,7 @@ def log_scalars(epoch,  scalars, log_file):
         for k, v in scalars.items():
             log(epoch, k, v, f)
 
-import json
+
 def log(epoch, key, value, f):
     assert type(key) == str and not ":" in key
     f.write(json.dumps(dict(epoch=epoch, key=key, value=value)))
@@ -265,7 +275,7 @@ def train(model, device, train_loader, optimizer, epoch, alpha, log_scalars, log
     return epoch_loss
 
 
-def test(epoch, model, device, train_dataset, eval_path, T):
+def test(epoch, model, device, train_dataset, eval_path, T, n_games):
     print("Test epoch {}".format(epoch))
     model.eval()
     test_loss = 0
@@ -273,27 +283,54 @@ def test(epoch, model, device, train_dataset, eval_path, T):
     epoch_path = os.path.join(eval_path, 'epoch{:05d}'.format(epoch))
     os.makedirs(epoch_path)
     with torch.no_grad():
-        game = train_dataset.game_data[0]
-        for i_obs in range(len(game)-1):
-            sample, _ = train_dataset.get_sample(0, i_obs, i_obs + 1)
-            png = sample['first'].to(device)
-            torch_xy, torch_softmaxed, _, dense_upscaled = model._encode(png.unsqueeze(0), T=T)
-            attentions, png, xy_img, argmax_xy_img, xy, argmax_xy = single_image(png=png, xy=torch_xy, softmaxed=torch_softmaxed, dense_upscaled=dense_upscaled)
-            if i_obs == 10:
-                print("xy[10]", xy[0, :, :])
+        for i_game in range(n_games):
+            game = train_dataset.game_data[i_game]
+            for i_obs in range(len(game)-1):
+                sample, _ = train_dataset.get_sample(0, i_obs, i_obs + 1)
+                png = sample['first'].to(device)
+                torch_xy, torch_softmaxed, _, dense_upscaled = model._encode(png.unsqueeze(0), T=T)
+                attentions, png, xy_img, argmax_xy_img, xy, argmax_xy = single_image(png=png, xy=torch_xy, softmaxed=torch_softmaxed, dense_upscaled=dense_upscaled)
+
                 silhuette_variance_loss = model.silhuette_variance_loss(torch_softmaxed, x=torch_xy[:, :, 0], y=torch_xy[:, :, 1])
                 keypoint_variety_loss = model.keypoints_variety_loss(torch_xy[:, :, :])
-                print("silh_var", silhuette_variance_loss.item())
-                print("keyp_var", keypoint_variety_loss.item())
-            for i_attention, attention in enumerate(attentions):
-                Image.fromarray(np.uint8(np.clip(attention*255, a_min=0, a_max=255))).resize((320, 320)).save(
-                    os.path.join(epoch_path, 'game0_att_{i_attention:03d}_{i_obs:03d}.png'.format(i_attention=i_attention, i_obs=i_obs)))
-            attentions = np.stack([np.clip(np.sum(np.stack(attentions, axis=2), axis=2), a_min=0.0, a_max=1.0)]*3, axis=2)
-            attention_png = cv2.resize(np.uint8(attentions * 127 + png * 127), (320, 320))
-            Image.fromarray(attention_png).save(os.path.join(epoch_path, 'game0_attentions_png_{i_obs:03d}.png'.format(i_obs=i_obs)))
-            Image.fromarray(np.uint8(xy_img*127 + png * 127)).resize((320, 320)).save(os.path.join(epoch_path, 'game0_xy_png_{i_obs:03d}.png'.format(i_obs=i_obs)))
-            Image.fromarray(np.uint8(argmax_xy_img * 127 + png * 127)).resize((320, 320)).save(
-                os.path.join(epoch_path, 'game0_argmaxxy_png_{i_obs:03d}.png'.format(i_obs=i_obs)))
+                # print("S", sample['first'].shape, sample['first_prev'].shape)
+                # print("X",model.img_change(X=sample).shape)
+                silhuette_consistency_loss = model.silhuette_consistency_loss(torch_xy, torch_softmaxed,
+                                                                              model.img_change(X={
+                                                                                  'first': sample['first'].unsqueeze(0).to(device),
+                                                                                  'first_prev': sample[
+                                                                                      'first_prev'].unsqueeze(0).to(device)}))
+                if i_obs == 40:
+                    print("xy[40]", xy[0, :, :])
+
+                    print("silh_var", silhuette_variance_loss.item())
+                    print("silh_con", silhuette_consistency_loss.item())
+                    print("keyp_var", keypoint_variety_loss.item())
+
+                for i_attention, attention in enumerate(attentions):
+                    Image.fromarray(np.uint8(np.clip(attention*255, a_min=0, a_max=255))).resize((320, 320)).save(
+                        os.path.join(epoch_path, 'game{i_game}_att_{i_attention:03d}_{i_obs:05d}.png'.format(i_game=i_game, i_attention=i_attention, i_obs=i_obs)))
+                attentions = np.stack([np.clip(np.sum(np.stack(attentions, axis=2), axis=2), a_min=0.0, a_max=1.0)]*3, axis=2)
+                attention_png = cv2.resize(np.uint8(attentions * 127 + png * 127), (320, 320))
+                Image.fromarray(attention_png).save(os.path.join(epoch_path, 'game{i_game}_attentions_png_{i_obs:05d}.png'.format(i_game=i_game, i_obs=i_obs)))
+                game0_xy = cv2.resize(np.uint8(xy_img*127 + png * 127), (320, 320))
+                game0_xy_with_losses = np.zeros((320, 640, 3), dtype=np.uint8) + 255
+                game0_xy_with_losses[:, :320, :] = game0_xy
+                game0_xy_with_losses = Image.fromarray(game0_xy_with_losses)
+                game0_xy_with_losses_draw = ImageDraw.Draw(game0_xy_with_losses)
+                font = ImageFont.truetype("DejaVuSans.ttf", 15)
+                pad = 20
+                # print("Z", silhuette_consistency_loss)
+                for i_text, text in enumerate(["silh_var {:.3f}".format(silhuette_variance_loss.item()),
+                                               "silh_con {:.3f}".format(silhuette_consistency_loss.item()),
+                                               "keyp_var {:.3f}".format(keypoint_variety_loss.item())]):
+                    game0_xy_with_losses_draw.text((320, i_text * pad), text, font=font, fill=(0,0,0,128))
+
+
+
+                game0_xy_with_losses.save(os.path.join(epoch_path, 'game{i_game}_xy_png_{i_obs:05d}.png'.format(i_game=i_game, i_obs=i_obs)))
+                Image.fromarray(np.uint8(argmax_xy_img * 127 + png * 127)).resize((320, 320)).save(
+                    os.path.join(epoch_path, 'game{i_game}_argmaxxy_png_{i_obs:05d}.png'.format(i_game=i_game, i_obs=i_obs)))
 
     #
     # test_loss /= len(test_loader.dataset)
@@ -331,20 +368,23 @@ def add_points(img, x, y):
 
 
 def single_image(png, xy, softmaxed, dense_upscaled):
+
     png = png.detach().cpu().numpy().copy()
     xy = xy.detach().cpu().numpy().copy()
     dense_upscaled = dense_upscaled.detach().cpu().numpy().copy()
     softmaxed = softmaxed.detach().cpu().numpy().copy()
+
+    img_shape = dense_upscaled.shape[2:4]
     n_keypoints = softmaxed.shape[1]
     softmaxed_normed = softmaxed[0, :, :, :].transpose([1, 2, 0])
-    argmax_xy = np.stack([np.unravel_index(np.argmax(dense_upscaled[0][i]), (80, 80)) for i in range(n_keypoints)])
+    argmax_xy = np.stack([np.unravel_index(np.argmax(dense_upscaled[0][i]), img_shape) for i in range(n_keypoints)])
     argmax_xy = argmax_xy.reshape((1, n_keypoints, 2))
     eps = 1e-7
     for i in range(softmaxed_normed.shape[2]):
         softmaxed_normed[:, :, i] = softmaxed_normed[:,:,i] / (softmaxed_normed[:, :, i].max() + eps)
-    attention = cv2.resize(softmaxed_normed, (80, 80))
-    xy_img = add_points(np.zeros((80, 80, 3), np.uint8), xy[:, :, 0], xy[:, :, 1])
-    argmax_xy_img = add_points(np.zeros((80, 80, 3), np.uint8), argmax_xy[:, :, 0], argmax_xy[:, :, 1])
+    attention = cv2.resize(softmaxed_normed, img_shape)
+    xy_img = add_points(np.zeros(img_shape + (3,), np.uint8), xy[:, :, 0], xy[:, :, 1])
+    argmax_xy_img = add_points(np.zeros(img_shape + (3,), np.uint8), argmax_xy[:, :, 0], argmax_xy[:, :, 1])
     #attention = attention[:, :, 0]  # + attention[:, :, 3:]
     # print(attention.shape)
     #attention = Image.fromarray(attention).resize((320, 320))
@@ -386,6 +426,10 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', action='append')
     parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                         help='how many batches to wait before logging training status')
+    parser.add_argument('--observations-dir', required=True)
+    parser.add_argument('--load-model', default=None, help='Use this model instead of creating a model from scratch.')
+    parser.add_argument('--test-only', action="store_true", help="If used, only a single test is performed.")
+    parser.add_argument('--test-n-games', type=int, default=1, help="How many games are to be 'played' while testing.")
     args = parser.parse_args()
 
 
@@ -402,7 +446,7 @@ if __name__ == '__main__':
     alpha = dict([a.split("=") for a in args.alpha])
     alpha = {k: torch.Tensor([float(v)]).to(device)[0] for k, v in alpha.items()}
 
-    data_path = '../atari-objects-observations/'
+    data_path = args.observations_dir
     eval_path = os.path.join('../atari-objects-evaluations/', run_id)
     scalars_log_filename = os.path.join(eval_path, 'logs')
     models_path = os.path.join(eval_path, "models")
@@ -423,7 +467,7 @@ if __name__ == '__main__':
         n_games=10000,
         min_diff=1,
         max_diff=args.max_diff,
-        epoch_size=batch_size * epoch_size
+        epoch_size=batch_size * epoch_size,
     )
     train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=args.n_data_loader_workers,
                               shuffle=False,  # It's shuffled anyway
@@ -438,9 +482,20 @@ if __name__ == '__main__':
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
+    if args.load_model:
+        loaded = torch.load(args.load_model)
+        print("Loading model {} with last loss {}".format(args.load_model, loaded['loss']))
+        model.load_state_dict(loaded['model_state_dict'])
+        epoch = loaded['epoch']
+        optimizer.load_state_dict(loaded['optimizer_state_dict'])
+
+    if args.test_only:
+        test(epoch, model, device, train_dataset, eval_path=eval_path, T=1, n_games=args.test_n_games)
+        sys.exit(0)
+
     last_loss = None
     for epoch in tqdm.tqdm(range(1, args.epochs + 1)):
-        test(epoch, model, device, train_dataset, eval_path=eval_path, T=1)
+        test(epoch, model, device, train_dataset, eval_path=eval_path, T=1, n_games=args.test_n_games)
         epoch_loss = train(model, device, train_loader, optimizer, epoch, alpha=alpha,
                            log_scalars=lambda epoch, scalars: log_scalars(epoch, scalars, scalars_log_filename),
                            log_iter_time=args.log_iter_time)

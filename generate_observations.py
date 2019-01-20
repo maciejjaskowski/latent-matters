@@ -16,8 +16,8 @@ def generate_observations(dir, run_id, expected_observations):
 
         print("All observations count {} out of {}".format(all_obs_count, expected_observations))
         observation = env.reset()
-        obs_name = os.path.join(dir, "obs_{}_{}_{}.png".format(run_id, i_game, 0))
-        cv2.imwrite(obs_name, observation)
+        obs_name = "obs_{}_{}_{}.png".format(run_id, i_game, 0)
+        cv2.imwrite(os.path.join(dir, obs_name), observation)
         obs_names = []
         step = 0
         done = False
@@ -27,8 +27,8 @@ def generate_observations(dir, run_id, expected_observations):
             action = env.action_space.sample()  # your agent here (this takes random actions)
             observation, reward, done, info = env.step(action)
             prev_obs_name = obs_name
-            obs_name = os.path.join(dir, "obs_{}_{}_{}.png".format(run_id, i_game, step))
-            cv2.imwrite(obs_name, cv2.cvtColor(observation, cv2.COLOR_RGB2BGR))
+            obs_name = "obs_{}_{}_{}.png".format(run_id, i_game, step)
+            cv2.imwrite(os.path.join(dir, obs_name), cv2.cvtColor(observation, cv2.COLOR_RGB2BGR))
             obs_names.append({"png": obs_name,
                               "reward": reward,
                               "action": action,

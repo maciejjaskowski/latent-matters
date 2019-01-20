@@ -16,6 +16,10 @@ class Dataset(data.Dataset):
         self.max_diff = max_diff  # Maximum distance to be predicted
         self.min_diff = min_diff
         self.epoch_size = epoch_size
+        # FIXME countdown=22 bo przez okolo 22 ramek nic sie nie dzieje i nie widac pilki
+        # At some point we should find a better way to model that in the model.
+        # self.countdown_reset = 22
+        self.countdown_reset = 0
 
         games = [os.path.join(root, d) for d in os.listdir(root) if d.endswith(".json")]
         self.obs_count = 0
@@ -27,17 +31,14 @@ class Dataset(data.Dataset):
         for game in games[:n_games]:
             with open(game, "r") as f:
                 game_obs = json.load(f)
-                # FIXME countdown=22 bo przez okolo 22 ramek nic sie nie dzieje i nie widac pilki
-                # At some point we should find a better way to model that in the model.
 
-                # FIXME(now) niech kazdy punkt bedzie osobna gra, zeby uniknac przeskakiwania obiektow - nie wiadomo jak to modelowac.
-                # At some point we should allow such jumps
-                countdown = 22
+
+                countdown = self.countdown_reset
                 filtered_game_obs = []
                 for o in game_obs:
                     if o['reward'] != 0: # or len(filtered_game_obs) > 3:
 
-                        countdown = 22
+                        countdown = self.countdown_reset
                         self.game_data.append(filtered_game_obs)
                         self.obs_count += len(filtered_game_obs)
                         filtered_game_obs = []
@@ -55,7 +56,7 @@ class Dataset(data.Dataset):
         self.root = root
 
     def transform(self, img):
-        img = cv2.resize(np.array(img), (80, 80))
+        img = cv2.resize(np.array(img), (84, 84))
         tensor = torchvision.transforms.ToTensor()(img)
         return tensor
 
@@ -64,12 +65,11 @@ class Dataset(data.Dataset):
 
     def get_sample(self, game_index, index1, index2):
         assert index1 <= index2
-        prefix = "../atari-objects-observations/"
-        first = prefix + self.game_data[game_index][index1]['png']
-        first_prev = prefix + self.game_data[game_index][index1]['prev_png']
+        first = os.path.join(self.root, self.game_data[game_index][index1]['png'])
+        first_prev = os.path.join(self.root, self.game_data[game_index][index1]['prev_png'])
 
-        second = prefix + self.game_data[game_index][index2]['png']
-        second_prev = prefix + self.game_data[game_index][index2]['prev_png']
+        second = os.path.join(self.root, self.game_data[game_index][index2]['png'])
+        second_prev = os.path.join(self.root, self.game_data[game_index][index2]['prev_png'])
 
         return {"first": self.transform(Image.open(first)),
                 "first_prev": self.transform(Image.open(first_prev)),
